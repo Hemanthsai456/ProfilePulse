@@ -23,7 +23,7 @@ import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager, closing
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -73,7 +73,7 @@ SAFE_COLORS = {
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         log_obj = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "message": record.getMessage(),
             "logger": record.name,
@@ -398,7 +398,7 @@ async def badge(
     is_preview = preview or (ignore_owner is True)
 
     now = time.time()
-    day = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d")
+    day = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
     window_id = int(now // WINDOW_SECONDS)
     key = visitor_key(day, request)
 
