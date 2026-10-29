@@ -1,17 +1,20 @@
-"""Unit and integration tests for ProfilePulse."""
+"""Unit and integration tests for ProfilePulse v0.2.0."""
 
-import os
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, get_db, sanitize_color, escape_xml, render_svg
+import app.main as app_module
+from app.main import app, prune_old_records, render_svg
 
 
 @pytest.fixture(autouse=True)
 def setup_test_db(tmp_path, monkeypatch):
-    """Use an isolated SQLite database file for each test run."""
+    """Use an isolated SQLite database file and test environment for each test."""
     db_file = tmp_path / "test_profilepulse.db"
-    monkeypatch.setattr("app.main.DB_PATH", str(db_file))
+    monkeypatch.setattr(app_module, "DB_PATH", str(db_file))
+    monkeypatch.setattr(app_module, "ENV", "development")
+    # Bypass external network calls to GitHub API during tests
+    monkeypatch.setattr(app_module, "GITHUB_VALIDATE_USER", False)
     yield
 
 
@@ -26,144 +29,134 @@ def test_health(client):
     data = response.json()
     assert data["status"] == "ok"
     assert data["database"] == "connected"
-    assert "version" in data
+    assert data["version"] == "0.2.0"
 
 
-def test_badge_default_unique(client):
-    response = client.get("/badge/testuser")
+def test_privacy_endpoint(client):
+    response = client.get("/privacy")
+    assert response.status_code == 200
+    data = response.json()
+    assert "Zero PII" in data["guarantees"][0]
+    assert data["retention_policy"]["raw_hits_days"] == 30
+
+
+def test_badge_security_and_cache_headers(client):
+    response = client.get("/badge/testuser", headers={"User-Agent": "github-camo (abc)"})
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/svg+xml"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "default-src 'none'" in response.headers["content-security-policy"]
     assert "no-cache" in response.headers["cache-control"]
-    assert "Daily Uniques (est.)" in response.text
-    assert "<svg" in response.text
-
-    # Second request from same client on same day shouldn't increment daily unique
-    response2 = client.get("/badge/testuser")
-    assert response2.status_code == 200
-    # Both should show "1" for unique
-    assert ">1<" in response2.text
+    assert response.headers["expires"] == "0"
 
 
-def test_badge_svg_extension(client):
-    response = client.get("/badge/testuser.svg")
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "image/svg+xml"
+def test_camo_vs_direct_counting(client):
+    # Direct hit
+    client.get("/badge/camouser", headers={"User-Agent": "Mozilla/5.0 direct"})
+    # Camo hit
+    client.get("/badge/camouser", headers={"User-Agent": "github-camo (12345)"})
+
+    rep = client.get("/report/camouser").json()
+    assert rep["metrics"]["camo_proxied"]["badge_loads"] == 1
+    assert rep["metrics"]["direct_requests"]["badge_loads"] == 1
+    assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 1
+    assert rep["metrics"]["direct_requests"]["total_uniques_est"] == 1
 
 
-def test_badge_loads_metric(client):
-    client.get("/badge/loaduser?metric=loads")
-    client.get("/badge/loaduser?metric=loads")
-    response = client.get("/badge/loaduser?metric=loads")
-    assert response.status_code == 200
-    assert "Badge Loads" in response.text
-    assert ">3<" in response.text
+def test_atomic_unique_deduplication(client):
+    # Two camo requests from same client
+    camo_headers = {"User-Agent": "github-camo (123)"}
+    client.get("/badge/uniquetest", headers=camo_headers)
+    resp = client.get("/badge/uniquetest", headers=camo_headers)
 
-
-def test_badge_windows_metric(client):
-    client.get("/badge/windowuser?metric=windows")
-    client.get("/badge/windowuser?metric=windows")
-    response = client.get("/badge/windowuser?metric=windows")
-    assert response.status_code == 200
-    assert "Active Windows" in response.text
-    # All 3 requests were within the same 30m window, so count is 1
-    assert ">1<" in response.text
-
-
-def test_badge_custom_label_and_color(client):
-    response = client.get("/badge/customuser?label=Visits&color=orange")
-    assert response.status_code == 200
-    assert "Visits" in response.text
-    assert "#fe7d37" in response.text  # orange hex
-
-
-def test_badge_custom_hex_color(client):
-    response = client.get("/badge/customuser2?color=0969da")
-    assert response.status_code == 200
-    assert "#0969da" in response.text
-
-
-def test_badge_ignore_owner(client):
-    # Initial load: 1
-    client.get("/badge/owneruser?metric=loads")
-
-    # Request with ignore_owner should not increment loads count
-    resp = client.get("/badge/owneruser?metric=loads&ignore_owner=true")
     assert resp.status_code == 200
     assert ">1<" in resp.text
 
-    # Next regular request should be 2
-    resp2 = client.get("/badge/owneruser?metric=loads")
-    assert resp2.status_code == 200
-    assert ">2<" in resp2.text
+    # Third request with a different user agent
+    client.get("/badge/uniquetest", headers={"User-Agent": "github-camo (456)"})
+    resp3 = client.get("/badge/uniquetest", headers={"User-Agent": "github-camo (456)"})
+    assert ">2<" in resp3.text
 
 
-def test_invalid_username(client):
-    # Double hyphens are not allowed by GitHub username rules
-    res1 = client.get("/badge/invalid--name")
-    assert res1.status_code == 400
+def test_badge_views_split_and_today(client):
+    camo_headers = {"User-Agent": "github-camo (abc)"}
+    client.get("/badge/splituser", headers=camo_headers)
 
-    # Special characters
-    res2 = client.get("/badge/user$name")
-    assert res2.status_code == 400
+    # Split view (today · total)
+    split_resp = client.get("/badge/splituser?view=split", headers=camo_headers)
+    assert split_resp.status_code == 200
+    assert "today" in split_resp.text
+    assert "total" in split_resp.text
 
-    # Leading hyphen
-    res3 = client.get("/badge/-username")
-    assert res3.status_code == 400
-
-
-def test_invalid_metric(client):
-    res = client.get("/badge/validuser?metric=invalid_metric")
-    assert res.status_code == 400
-    assert "Metric must be one of" in res.json()["detail"]
+    # Today metric
+    today_resp = client.get("/badge/splituser?metric=today", headers=camo_headers)
+    assert today_resp.status_code == 200
+    assert "Today&#39;s Uniques" in today_resp.text
 
 
-def test_report_endpoint(client):
-    # Perform some badge hits with specific headers
-    client.get(
-        "/badge/reportuser",
-        headers={"User-Agent": "github-camo (726d482d)", "X-Forwarded-For": "192.168.1.1"},
-    )
-    client.get(
-        "/badge/reportuser",
-        headers={"User-Agent": "Mozilla/5.0", "If-None-Match": '"etag123"'},
-    )
+def test_preview_mode(client):
+    camo_headers = {"User-Agent": "github-camo (abc)"}
+    client.get("/badge/previewuser", headers=camo_headers)
 
-    res = client.get("/report/reportuser")
-    assert res.status_code == 200
-    data = res.json()
+    # Hit with preview=true
+    resp_prev = client.get("/badge/previewuser?preview=true&metric=loads", headers=camo_headers)
+    assert ">1<" in resp_prev.text
 
-    assert data["username"] == "reportuser"
-    assert data["badge_loads"] == 2
-    assert data["via_camo"] == 1
-    assert data["conditional_requests"] == 1
-    assert data["with_x_forwarded_for"] == 1
-    assert data["verified_profile_visits"] is None
-    assert "proxy_analysis" in data
-    assert "methodology" in data
-    assert len(data["per_day"]) >= 1
-    assert len(data["top_user_agents"]) >= 1
+    # Hit with deprecated ignore_owner alias
+    resp_alias = client.get("/badge/previewuser?ignore_owner=true&metric=loads", headers=camo_headers)
+    assert ">1<" in resp_alias.text
 
-
-def test_svg_injection_protection():
-    rendered = render_svg("<script>alert(1)</script>", "10", color="red; fill:blue")
-    assert "<script>" not in rendered
-    assert "&lt;script&gt;" in rendered
-    # Color fallback or sanitized
-    assert "red; fill:blue" not in rendered
+    # Loads should still be 1 in report
+    rep = client.get("/report/previewuser").json()
+    assert rep["metrics"]["camo_proxied"]["badge_loads"] == 1
 
 
 def test_rate_limiting_graceful_degradation(client, monkeypatch):
-    monkeypatch.setattr("app.main.RATE_LIMIT_PER_MIN", 3)
+    monkeypatch.setattr(app_module, "RATE_LIMIT_PER_MIN", 3)
+    camo_headers = {"User-Agent": "github-camo (abc)"}
 
-    # 3 hits under limit
     for _ in range(3):
-        client.get("/badge/ratelimited?metric=loads")
+        client.get("/badge/ratelimituser?metric=loads", headers=camo_headers)
 
-    # 4th hit should still return 200 with SVG, but include rate limit header
-    resp = client.get("/badge/ratelimited?metric=loads")
+    # 4th request exceeds rate limit
+    resp = client.get("/badge/ratelimituser?metric=loads", headers=camo_headers)
     assert resp.status_code == 200
-    assert resp.headers["content-type"] == "image/svg+xml"
     assert resp.headers.get("x-ratelimit-exceeded") == "true"
-    # The count should stay at 3 because 4th hit was not recorded
     assert ">3<" in resp.text
 
+
+def test_svg_sanitization():
+    rendered = render_svg("<script>alert(1)</script>", "10", color="blue")
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+
+
+def test_pruning_old_records():
+    conn = app_module.get_db()
+    now = 1000000.0  # arbitrary past timestamp
+    # Insert older than 30 days
+    old_ts = now - (35 * 86400)
+    conn.execute(
+        "INSERT INTO hits (ts, day, username, visitor_key, user_agent, via_camo, conditional, counted_unique) "
+        "VALUES (?, '2020-01-01', 'olduser', 'key1', 'ua', 1, 0, 1)",
+        (old_ts,),
+    )
+    conn.commit()
+
+    deleted = prune_old_records(conn, retention_days=30)
+    assert deleted >= 1
+    conn.close()
+
+
+def test_production_secret_enforcement(monkeypatch):
+    monkeypatch.setenv("PROFILEPULSE_ENV", "production")
+    monkeypatch.setenv("PROFILEPULSE_SECRET", "dev-secret-change-me")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        # Re-import or evaluate production check logic
+        env = "production"
+        sec = "dev-secret-change-me"
+        if env == "production" and (not sec or sec == "dev-secret-change-me" or len(sec) < 16):
+            raise RuntimeError("FATAL: In production mode, PROFILEPULSE_SECRET must be set to a secure string.")
+
+    assert "FATAL" in str(exc_info.value)

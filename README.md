@@ -16,9 +16,22 @@
 
 ## 📌 Overview
 
-Many GitHub profile visitor counters inflate numbers by counting every image reload as a unique human visit. Furthermore, because GitHub proxies images through [Camo](https://github.com/atmos/camo) (`camo.githubusercontent.com`), external servers observe GitHub's proxy rather than direct visitor IPs.
+Many GitHub profile visitor counters inflate numbers by counting every image reload or script execution as a unique human visit. Furthermore, because GitHub proxies images through [Camo](https://github.com/atmos/camo) (`camo.githubusercontent.com`), external servers observe GitHub's proxy rather than direct visitor IPs.
 
-**ProfilePulse** is an open-source, lightweight microservice designed to provide **truthful, transparent README badge analytics**. It reports what it can actually observe, clearly distinguishes between raw requests and estimated visitors, and never claims to measure things an image tag cannot observe.
+**ProfilePulse** is an open-source, hardened microservice designed to provide **truthful, transparent README badge analytics**. It reports what it can actually observe, clearly distinguishes between raw requests and estimated visitors, and never claims to measure things an image tag cannot observe.
+
+---
+
+## 🛡️ Anti-Inflation & Hardening (v0.2.0)
+
+- **Camo Proxy Verification:** Only requests originating from GitHub's Camo image proxy (`User-Agent: github-camo ...`) count toward primary badge metrics. Direct curl/browser hits cannot trivially inflate profile counts.
+- **Atomic Deduplication:** Eliminates check-then-insert race conditions using database unique constraints (`INSERT OR IGNORE`).
+- **Daily Key Rotation:** Visitor fingerprints incorporate the UTC day in the HMAC payload (`HMAC(SECRET, day|ip|ua)`). Hashes rotate daily so visitors cannot be cross-correlated across dates.
+- **Fast $O(1)$ Reads:** Aggregated counters are maintained in dedicated summary tables. Badge queries execute in sub-millisecond time, preventing GitHub Camo timeouts.
+- **Automatic 30-Day Retention:** Raw request telemetry is automatically purged after 30 days while preserving cumulative daily and total statistics.
+- **GitHub Account Verification:** Checks that requested usernames exist on GitHub before storing telemetry to prevent junk spamming.
+- **SVG Security:** Strict `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'` and `X-Content-Type-Options: nosniff`.
+- **Non-Root Docker:** Runs as a non-privileged system user (`appuser`, UID 10001) with reverse-proxy header support.
 
 ---
 
@@ -26,9 +39,10 @@ Many GitHub profile visitor counters inflate numbers by counting every image rel
 
 | Metric | Query Parameter | What It Actually Measures | Resilience to Refreshes |
 |---|---|---|---|
-| **Daily Uniques (est.)** | `?metric=unique` *(default)* | At most one hit per visitor fingerprint (HMAC) per UTC day | Medium (bounded by Camo proxy behavior) |
-| **Badge Loads** | `?metric=loads` | Every raw HTTP request that reached the server | Low (counts every uncached reload) |
-| **Active Windows** | `?metric=windows` | Distinct 30-minute time intervals with observed badge activity | **High** (defuses refresh spam without tracking people) |
+| **Total Uniques (est.)** | `?metric=unique` *(default)* | Sum of each day's unique visitors via GitHub Camo | High (deduplicated per day) |
+| **Today's Uniques** | `?metric=today` | Today's unique visitors via GitHub Camo | High (resets at 00:00 UTC) |
+| **Active Windows** | `?metric=windows` | Distinct 30-minute time intervals with observed badge activity | **Maximum** (resists refresh spam without tracking people) |
+| **Badge Loads** | `?metric=loads` | Every uncached HTTP request reaching the server | Low (counts every uncached reload) |
 | **Verified Profile Visits** | *None* | Stays `null`. A static image badge cannot prove a page visit. | N/A — Never fabricated |
 
 ---
@@ -38,17 +52,23 @@ Many GitHub profile visitor counters inflate numbers by counting every image rel
 Embed the badge directly into your GitHub profile `README.md`:
 
 ```markdown
-<!-- Default: Daily Uniques (est.) -->
+<!-- Default: Total Uniques (est.) -->
 ![Profile Views](https://your-profilepulse-instance.com/badge/YOUR_GITHUB_USERNAME)
 
-<!-- Metric: Badge Loads -->
-![Badge Loads](https://your-profilepulse-instance.com/badge/YOUR_GITHUB_USERNAME?metric=loads)
+<!-- Split View: Today's Count alongside All-Time Total -->
+![Profile Views](https://your-profilepulse-instance.com/badge/YOUR_GITHUB_USERNAME?view=split)
+
+<!-- Today's Unique Visitors Only -->
+![Today's Visitors](https://your-profilepulse-instance.com/badge/YOUR_GITHUB_USERNAME?metric=today)
 
 <!-- Metric: Active 30-min Windows (Spam-Resistant) -->
 ![Active Windows](https://your-profilepulse-instance.com/badge/YOUR_GITHUB_USERNAME?metric=windows)
 
+<!-- Metric: Raw Badge Loads -->
+![Badge Loads](https://your-profilepulse-instance.com/badge/YOUR_GITHUB_USERNAME?metric=loads)
+
 <!-- Custom Label and Color -->
-![Visits](https://your-profilepulse-instance.com/badge/YOUR_GITHUB_USERNAME?metric=unique&label=Profile+Visits&color=0969da)
+![Visits](https://your-profilepulse-instance.com/badge/YOUR_GITHUB_USERNAME?label=Profile+Visits&color=0969da)
 ```
 
 > [!NOTE]
@@ -58,10 +78,12 @@ Embed the badge directly into your GitHub profile `README.md`:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `metric` | `string` | `unique` | One of `unique`, `loads`, or `windows`. |
+| `metric` | `string` | `unique` | One of `unique` (all-time), `today`, `windows`, or `loads`. |
+| `view` | `string` | `""` | Set to `split` to display `today · total` (e.g. `12 today · 1.2k total`). |
 | `label` | `string` | Automatic | Left badge label (e.g. `Views`, `Visitors`). |
 | `color` | `string` | `#2ea043` | Hex code (e.g. `0969da`) or name (`blue`, `orange`, `green`, `red`, etc.). |
-| `ignore_owner` | `bool` | `false` | When `true` (or `1`), returns the current badge without incrementing or logging the visit. Useful for README previews. |
+| `source` | `string` | `camo` | `camo` (GitHub proxy views only), `all`, or `direct`. |
+| `preview` | `bool` | `false` | When `true` (or `1`), returns the current badge without incrementing or logging the visit. Useful for README previews. |
 
 ---
 
@@ -72,44 +94,36 @@ ProfilePulse provides a public transparency endpoint for any user at `/report/{u
 ```json
 {
   "username": "hemanthsai456",
-  "badge_loads": 128,
-  "daily_uniques_est": 42,
-  "active_windows": 36,
-  "distinct_visitor_keys": 7,
-  "via_camo": 121,
-  "conditional_requests": 14,
-  "with_x_forwarded_for": 121,
+  "metrics": {
+    "camo_proxied": {
+      "total_uniques_est": 42,
+      "badge_loads": 128,
+      "active_windows": 36
+    },
+    "direct_requests": {
+      "total_uniques_est": 2,
+      "badge_loads": 5
+    },
+    "combined": {
+      "total_loads": 133,
+      "distinct_visitor_keys_retained": 7,
+      "camo_percentage": 96.2,
+      "conditional_requests": 14
+    },
+    "verified_profile_visits": null
+  },
   "per_day": [
     {
       "day": "2026-10-29",
-      "loads": 45,
-      "distinct_keys": 4,
-      "active_windows": 12,
-      "daily_uniques_est": 15
+      "camo_uniques": 15,
+      "camo_loads": 45,
+      "camo_windows": 12,
+      "direct_uniques": 1,
+      "direct_loads": 2
     }
-  ],
-  "verified_profile_visits": null,
-  "proxy_analysis": {
-    "camo_request_percentage": 94.5,
-    "signal": "Distinct visitor keys observed across requests."
-  }
+  ]
 }
 ```
-
----
-
-## 🧪 Feasibility Experiment Protocol
-
-ProfilePulse is built to investigate whether embedded badges can distinguish visitors behind GitHub's image proxy. 
-
-Follow the structured experiment protocol in [docs/EXPERIMENT.md](docs/EXPERIMENT.md):
-1. **Direct Request:** Baseline direct request.
-2. **Profile Embed:** Embed badge and visit once.
-3. **Repeated Refreshes:** Inspect caching absorption.
-4. **Multi-Device / Network:** Measure `distinct_visitor_keys`.
-5. **Decision Gate:** Evaluate if Camo masks visitor entropy.
-
-For design rationale and the decision roadmap, see [docs/IDEA.md](docs/IDEA.md) and [docs/IDEA_v2.md](docs/IDEA_v2.md).
 
 ---
 
@@ -132,44 +146,48 @@ pip install -r requirements-dev.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Running Tests
-ProfilePulse includes an automated test suite verifying badge generation, rate-limiting, metrics calculation, and security protections:
-
+### Running Tests & Linting
 ```bash
+# Run automated test suite
 pytest
+
+# Run linter
+ruff check .
 ```
 
 ---
 
 ## 🐳 Docker Deployment
 
-### Run with Docker
+### Run with Docker Compose
+```bash
+docker compose up -d --build
+```
+
+### Run with Docker CLI
 ```bash
 # Build Docker image
 docker build -t profilepulse .
 
-# Run container with persistent data volume
+# Run container with persistent data volume and proxy headers
 docker run -d \
   -p 8000:8000 \
   -v profilepulse_data:/data \
-  -e PROFILEPULSE_SECRET="replace-with-a-secure-secret-key" \
+  -e PROFILEPULSE_ENV="production" \
+  -e PROFILEPULSE_SECRET="generate-a-secure-random-secret-key-min-16-chars" \
   --name profilepulse \
   profilepulse
-```
-
-### Run with Docker Compose
-```bash
-docker compose up -d
 ```
 
 ---
 
 ## 🔒 Privacy & Security
 
-- **No Raw IP Storage:** Visitor fingerprints (`visitor_key`) are generated using an HMAC SHA-256 digest of request attributes with a server-side secret (`PROFILEPULSE_SECRET`). Raw IP addresses and user agents are never stored in plain text.
-- **XSS & Injection Protection:** Badge labels, colors, and values are strictly validated, sanitized, and XML-escaped prior to SVG assembly.
-- **Abuse Prevention & Rate Limiting:** Includes per-user rate limiting (default 60 requests/minute). Requests exceeding the threshold degrade gracefully by returning the current badge without failing or crashing.
-- **Cache-Control:** Emits strict `no-cache, no-store, must-revalidate` directives to ensure GitHub Camo refreshes badges as expected.
+Visit `/privacy` on your deployment to view the automated public privacy policy:
+- **Zero PII:** Raw IP addresses and user agents are never stored in plain text.
+- **Daily Key Rotation:** Visitor fingerprints (`visitor_key`) use HMAC-SHA256 salted with the UTC date string (`day`). Hashes rotate every 24 hours, preventing cross-day tracking.
+- **Strict 30-Day Retention:** Raw request telemetry is purged after 30 days. Only anonymous aggregated totals are retained.
+- **Production Guardrail:** In production (`PROFILEPULSE_ENV=production`), the application refuses to start if `PROFILEPULSE_SECRET` is unset, default, or less than 16 characters.
 
 ---
 
