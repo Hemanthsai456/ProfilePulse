@@ -166,3 +166,4 @@ def test_rate_limiting_graceful_degradation(client, monkeypatch):
     assert resp.headers.get("x-ratelimit-exceeded") == "true"
     # The count should stay at 3 because 4th hit was not recorded
     assert ">3<" in resp.text
+

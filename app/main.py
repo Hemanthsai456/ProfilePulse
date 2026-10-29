@@ -401,3 +401,4 @@ def health() -> Dict[str, Any]:
         "version": __version__,
         "database": db_status,
     }
+

@@ -71,3 +71,4 @@ Evaluate your `/report/<username>` numbers:
 ## 4. Guiding Principle
 
 > **Measure only what the system can actually observe. Never present badge loads as verified profile visits.**
+
