@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Databases & local data
+*.db
+*.sqlite
+*.sqlite3
+profilepulse.db
+/data/

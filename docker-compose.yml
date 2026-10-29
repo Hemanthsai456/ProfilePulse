@@ -1,0 +1,16 @@
+services:
+  profilepulse:
+    build: .
+    container_name: profilepulse
+    ports:
+      - "8000:8000"
+    environment:
+      - PROFILEPULSE_SECRET=dev-secret-change-me
+      - PROFILEPULSE_RATE_LIMIT=60
+      - PROFILEPULSE_DB=/data/profilepulse.db
+    volumes:
+      - profilepulse_data:/data
+    restart: unless-stopped
+
+volumes:
+  profilepulse_data:
