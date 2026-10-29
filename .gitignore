@@ -225,3 +225,6 @@ __marimo__/
 *.sqlite3
 profilepulse.db
 /data/
+.neon
+node_modules/
+.env.local
