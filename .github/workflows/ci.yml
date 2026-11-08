@@ -9,6 +9,20 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: profilepulse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -33,8 +47,16 @@ jobs:
         ruff check .
 
     - name: Run Pytest
+      shell: bash
+      env:
+        TEST_DATABASE_URL: postgresql://postgres:password@localhost:5432/profilepulse_test
       run: |
-        python -m pytest
+        set -eo pipefail
+        python -m pytest -rs | tee pytest.log
+        if grep -E "^SKIPPED |[0-9]+ skipped" pytest.log; then
+          echo "ERROR: Tests were skipped in CI. All tests must execute and pass."
+          exit 1
+        fi
 
   docker-build:
     runs-on: ubuntu-latest
