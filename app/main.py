@@ -650,7 +650,7 @@ async def badge(
         display_label = label[:32] if label else "Badge Loads"
         display_value = format_number(total_loads)
     else:  # 'unique' (default)
-        display_label = label[:32] if label else "Total Uniques (est.)"
+        display_label = label[:32] if label else "Total Unique Visitors"
         display_value = format_number(total_unique)
 
     svg_content = render_svg(display_label, display_value, color)
