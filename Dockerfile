@@ -2,16 +2,15 @@ FROM python:3.12-slim
 
 # Prevent Python from writing bytecode and buffer stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PROFILEPULSE_DB=/data/profilepulse.db
+    PYTHONUNBUFFERED=1
 
 WORKDIR /srv
 
-# Create non-root system user and persistent data directory
+# Create non-root system user
 RUN groupadd --system --gid 10001 appgroup && \
     useradd --system --uid 10001 --gid appgroup --no-create-home appuser && \
-    mkdir -p /data /srv && \
-    chown -R appuser:appgroup /data /srv
+    mkdir -p /srv && \
+    chown -R appuser:appgroup /srv
 
 # Install dependencies
 COPY requirements.txt .
