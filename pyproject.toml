@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "profilepulse"
-version = "0.2.0"
+version = "0.3.0"
 description = "Honest, privacy-first GitHub README badge visitor analytics service."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,7 @@ dependencies = [
     "starlette>=0.37.0,<1.0.0",
     "uvicorn[standard]>=0.28.0,<1.0.0",
     "httpx>=0.27.0,<1.0.0",
+    "psycopg[binary]>=3.1.0,<4.0.0",
 ]
 
 [project.optional-dependencies]

@@ -1,17 +1,35 @@
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: profilepulse_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: profilepulse
+      POSTGRES_PASSWORD: profilepulse
+      POSTGRES_DB: profilepulse
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U profilepulse -d profilepulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   profilepulse:
     build: .
     container_name: profilepulse
     ports:
       - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       - PROFILEPULSE_ENV=development
-      - PROFILEPULSE_SECRET=${PROFILEPULSE_SECRET:-local-dev-secret-key-32chars}
+      - PROFILEPULSE_SECRET=${PROFILEPULSE_SECRET:?PROFILEPULSE_SECRET must be set}
+      - DATABASE_URL=postgresql://profilepulse:profilepulse@db:5432/profilepulse
       - PROFILEPULSE_RATE_LIMIT=60
-      - PROFILEPULSE_DB=/data/profilepulse.db
-    volumes:
-      - profilepulse_data:/data
+      - PROFILEPULSE_TRUST_PROXY=false
     restart: unless-stopped
 
 volumes:
-  profilepulse_data:
+  postgres_data:

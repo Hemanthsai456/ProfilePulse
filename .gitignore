@@ -221,10 +221,22 @@ __marimo__/
 
 # Databases & local data
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 profilepulse.db
+data/
 /data/
-.neon
-node_modules/
+
+# Environment & local settings
+.env
 .env.local
+.venv/
+venv/
+
+# IDE & OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

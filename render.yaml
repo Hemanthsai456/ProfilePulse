@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: profilepulse
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PROFILEPULSE_ENV
+        value: production
+      - key: PROFILEPULSE_SECRET
+        generateValue: true
+      - key: PROFILEPULSE_TRUST_PROXY
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
+
