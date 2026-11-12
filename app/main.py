@@ -4,7 +4,7 @@ Core Research & Engineering Design:
   * Camo Verification: Distinguishes between requests from GitHub's Camo image proxy
     (camo.githubusercontent.com) and direct HTTP/curl hits.
   * Race-Condition Free: Uses atomic PostgreSQL unique constraints with ON CONFLICT DO NOTHING.
-  * Ephemeral Daily Keys: Incorporates UTC date in HMAC hashing so visitor keys rotate daily.
+  * Ephemeral Daily Keys: Incorporates the IST date (+05:30) in HMAC hashing so visitor keys rotate daily at IST midnight.
   * Totals Table: O(1) reads for fast badge rendering without slow full-table scans.
   * 30-Day Retention: Automatically prunes raw hit logs while preserving daily and total aggregates.
   * GitHub Account Validation: Validates GitHub username existence to prevent junk spamming.
@@ -23,7 +23,7 @@ import sys
 import time
 import urllib.parse
 from contextlib import asynccontextmanager, closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -31,7 +31,22 @@ import psycopg
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from psycopg.rows import dict_row
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
+
+# Indian Standard Time (UTC+05:30). Daily counters roll over at IST midnight,
+# and human-readable timestamp columns are stored in IST.
+IST = timezone(timedelta(hours=5, minutes=30), name="IST")
+IST_LABEL = "Asia/Kolkata (UTC+05:30)"
+
+
+def ist_day(ts: float) -> str:
+    """Return the IST calendar date (YYYY-MM-DD) for a Unix timestamp."""
+    return datetime.fromtimestamp(ts, IST).strftime("%Y-%m-%d")
+
+
+def ist_stamp(ts: float) -> str:
+    """Return a human-readable IST timestamp, e.g. '2026-11-12 21:07:03 IST'."""
+    return datetime.fromtimestamp(ts, IST).strftime("%Y-%m-%d %H:%M:%S") + " IST"
 
 # --- Environment & Configuration ---
 ENV = os.environ.get("PROFILEPULSE_ENV", os.environ.get("ENVIRONMENT", "development")).lower()
@@ -239,6 +254,21 @@ def init_db(conn: psycopg.Connection) -> None:
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_hits_user_day ON hits(username, day)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_hits_ts ON hits(ts)")
+
+        # 6. IST timestamp columns (migration, non-destructive). Existing rows are kept;
+        #    new columns are added with IF NOT EXISTS and backfilled from the epoch `ts`.
+        ist_expr = "to_char(to_timestamp({col}) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS') || ' IST'"
+        migrations = [
+            ("hits", "ts_ist", "ts"),
+            ("daily_uniques", "first_seen_ist", "ts"),
+            ("active_windows", "first_seen_ist", "ts"),
+            ("user_totals", "updated_at_ist", "updated_at"),
+        ]
+        for table, column, src in migrations:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT")
+            cur.execute(
+                f"UPDATE {table} SET {column} = {ist_expr.format(col=src)} WHERE {column} IS NULL"
+            )
     conn.commit()
 
 
@@ -292,7 +322,7 @@ def get_client_ip(request: Request) -> str:
 def visitor_key(day: str, request: Request) -> str:
     """Generate an ephemeral, daily-rotated HMAC visitor fingerprint.
 
-    Incorporates the UTC day into the HMAC salt so visitor keys rotate daily.
+    Incorporates the IST day into the HMAC salt so visitor keys rotate at IST midnight.
     Uses get_client_ip(request).
     """
     ip = get_client_ip(request)
@@ -496,7 +526,8 @@ async def badge(
     is_preview = preview or (ignore_owner is True)
 
     now = time.time()
-    day = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
+    day = ist_day(now)  # daily counters reset at IST midnight (00:00 +05:30)
+    stamp = ist_stamp(now)
     window_id = int(now // WINDOW_SECONDS)
     key = visitor_key(day, request)
 
@@ -518,19 +549,19 @@ async def badge(
         if not is_preview and not rate_limit_exceeded:
             # 1. Atomic daily unique insertion (avoids check-then-insert race condition)
             cur.execute(
-                """INSERT INTO daily_uniques (username, day, visitor_key, via_camo, ts)
-                VALUES (%s, %s, %s, %s, %s)
+                """INSERT INTO daily_uniques (username, day, visitor_key, via_camo, ts, first_seen_ist)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING""",
-                (user, day, key, is_camo, now),
+                (user, day, key, is_camo, now, stamp),
             )
             counted_unique = 1 if cur.rowcount > 0 else 0
 
             # 2. Atomic active window insertion
             cur.execute(
-                """INSERT INTO active_windows (username, window_id, via_camo, ts)
-                VALUES (%s, %s, %s, %s)
+                """INSERT INTO active_windows (username, window_id, via_camo, ts, first_seen_ist)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING""",
-                (user, window_id, is_camo, now),
+                (user, window_id, is_camo, now, stamp),
             )
             counted_window = 1 if cur.rowcount > 0 else 0
 
@@ -538,15 +569,16 @@ async def badge(
             cur.execute(
                 """INSERT INTO user_totals (
                     username, camo_uniques, camo_loads, camo_windows,
-                    direct_uniques, direct_loads, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    direct_uniques, direct_loads, updated_at, updated_at_ist
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (username) DO UPDATE SET
                     camo_uniques = user_totals.camo_uniques + EXCLUDED.camo_uniques,
                     camo_loads = user_totals.camo_loads + EXCLUDED.camo_loads,
                     camo_windows = user_totals.camo_windows + EXCLUDED.camo_windows,
                     direct_uniques = user_totals.direct_uniques + EXCLUDED.direct_uniques,
                     direct_loads = user_totals.direct_loads + EXCLUDED.direct_loads,
-                    updated_at = EXCLUDED.updated_at""",
+                    updated_at = EXCLUDED.updated_at,
+                    updated_at_ist = EXCLUDED.updated_at_ist""",
                 (
                     user,
                     counted_unique if is_camo else 0,
@@ -555,6 +587,7 @@ async def badge(
                     counted_unique if not is_camo else 0,
                     1 if not is_camo else 0,
                     now,
+                    stamp,
                 ),
             )
 
@@ -585,9 +618,9 @@ async def badge(
             cur.execute(
                 """INSERT INTO hits (
                     ts, day, username, visitor_key, client_type,
-                    via_camo, conditional, counted_unique
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                (now, day, user, key, client_cat, is_camo, is_conditional, counted_unique),
+                    via_camo, conditional, counted_unique, ts_ist
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (now, day, user, key, client_cat, is_camo, is_conditional, counted_unique, stamp),
             )
             conn.commit()
 
@@ -676,7 +709,8 @@ def report(username: str) -> dict[str, Any]:
 
     with closing(get_db()) as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT camo_uniques, camo_loads, camo_windows, direct_uniques, direct_loads FROM user_totals WHERE username=%s",
+            "SELECT camo_uniques, camo_loads, camo_windows, direct_uniques, direct_loads, updated_at_ist "
+            "FROM user_totals WHERE username=%s",
             (user,),
         )
         tot_row = cur.fetchone()
@@ -732,6 +766,9 @@ def report(username: str) -> dict[str, Any]:
 
     return {
         "username": user,
+        "timezone": IST_LABEL,
+        "day_boundary": "Daily counters reset at 00:00 IST (+05:30).",
+        "last_updated_ist": tot_row.get("updated_at_ist") if tot_row else None,
         "metrics": {
             "camo_proxied": {
                 "total_uniques_est": tot["camo_uniques"],
@@ -768,7 +805,7 @@ def privacy() -> dict[str, Any]:
         "version": __version__,
         "guarantees": [
             "Zero PII: IP addresses and user agents are never stored in raw form. Only coarse client categories (e.g. github-camo, browser, script) and ephemeral daily HMAC hashes are kept.",
-            "Ephemeral Daily Hashing: Visitor keys are generated using HMAC-SHA256 with the UTC date salted in, ensuring hashes rotate daily and cannot be linked across days.",
+            "Ephemeral Daily Hashing: Visitor keys are generated using HMAC-SHA256 with the IST (UTC+05:30) date salted in, ensuring hashes rotate daily at IST midnight and cannot be linked across days.",
             "Strict 30-Day Retention: Raw telemetry and visitor hashes are purged after 30 days. Only aggregated counters are preserved.",
             "No Cookies: ProfilePulse sets zero cookies and performs no cross-site user tracking.",
         ],
