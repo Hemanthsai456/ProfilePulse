@@ -92,6 +92,7 @@ def setup_test_db(monkeypatch):
                     DROP TABLE IF EXISTS daily_uniques CASCADE;
                     DROP TABLE IF EXISTS daily_stats CASCADE;
                     DROP TABLE IF EXISTS user_totals CASCADE;
+                    DROP TABLE IF EXISTS visitor_seen CASCADE;
                 """)
             conn.commit()
             app_module.init_db(conn)
@@ -153,20 +154,50 @@ def test_camo_vs_direct_counting(client):
     assert rep["metrics"]["direct_requests"]["total_uniques_est"] == 1
 
 
-def test_atomic_unique_deduplication(client):
+def test_atomic_unique_deduplication(client, monkeypatch):
     require_test_db()
-    # Two camo requests from same client
-    camo_headers = {"User-Agent": "github-camo (123)"}
+    monkeypatch.setattr(app_module, "TRUST_PROXY", True)
+    # Two camo requests from the same viewer IP count once
+    camo_headers = {"User-Agent": "github-camo (123)", "X-Forwarded-For": "198.51.100.10"}
     client.get("/badge/uniquetest", headers=camo_headers)
     resp = client.get("/badge/uniquetest", headers=camo_headers)
 
     assert resp.status_code == 200
     assert ">1<" in resp.text
 
-    # Third request with a different user agent
-    client.get("/badge/uniquetest", headers={"User-Agent": "github-camo (456)"})
-    resp3 = client.get("/badge/uniquetest", headers={"User-Agent": "github-camo (456)"})
+    # A different viewer IP is a second unique visitor
+    other_headers = {"User-Agent": "github-camo (456)", "X-Forwarded-For": "198.51.100.11"}
+    client.get("/badge/uniquetest", headers=other_headers)
+    resp3 = client.get("/badge/uniquetest", headers=other_headers)
     assert ">2<" in resp3.text
+
+
+def test_repeat_visitor_counted_once_per_dedupe_period(client, monkeypatch):
+    require_test_db()
+    monkeypatch.setattr(app_module, "TRUST_PROXY", True)
+    monkeypatch.setattr(app_module, "DEDUPE_DAYS", 30)
+    headers = {"User-Agent": "github-camo (789)", "X-Forwarded-For": "198.51.100.50"}
+
+    # Repeated visits within the period count once
+    for _ in range(3):
+        client.get("/badge/dedupeuser", headers=headers)
+    rep = client.get("/report/dedupeuser").json()
+    assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 1
+    assert rep["metrics"]["camo_proxied"]["badge_loads"] == 3
+
+    # Push the last counted visit 31 days back: the same visitor counts again
+    conn = app_module.get_db()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE visitor_seen SET last_counted = last_counted - %s WHERE username = %s",
+            (31 * 86400.0, "dedupeuser"),
+        )
+    conn.commit()
+    conn.close()
+
+    client.get("/badge/dedupeuser", headers=headers)
+    rep = client.get("/report/dedupeuser").json()
+    assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 2
 
 
 def test_badge_views_split_and_today(client):

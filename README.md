@@ -61,6 +61,7 @@ Configure via environment variables or a `.env` file:
 | `PROFILEPULSE_ENV` | `development` | Mode: `development` or `production`. In production, secure secret checks are enforced. |
 | `PROFILEPULSE_SECRET` | `dev-secret-change-me` | Secret for HMAC hashing visitor fingerprints. Must be a secure 16+ char key in production. |
 | `PROFILEPULSE_RATE_LIMIT` | `60` | Maximum requests per minute per client IP before rate limiting. |
+| `PROFILEPULSE_DEDUPE_DAYS` | `30` | A visitor is counted once, then not again until this many days have passed since their last counted visit. |
 | `PROFILEPULSE_WINDOW_SECONDS` | `1800` | Duration in seconds for an active window block (default: 30 minutes). |
 | `PROFILEPULSE_RETENTION_DAYS` | `30` | Retention period in days for raw hit logs before automatic pruning. |
 | `PROFILEPULSE_TRUST_PROXY` | `false` | When `true`, honors `X-Forwarded-For`. Set `true` only behind trusted reverse proxies (e.g. Render). |
@@ -73,7 +74,7 @@ Configure via environment variables or a `.env` file:
 
 ProfilePulse adheres to strict privacy guarantees matching `/privacy`:
 - **Zero Raw PII**: Neither raw IP addresses nor raw User-Agent strings are stored. Only coarse categories (`github-camo`, `browser`, `script`, `other`) are saved.
-- **Daily Key Rotation**: Visitor fingerprints use HMAC-SHA256 salted with the UTC date string (`HMAC(SECRET, day|ip|ua)`), rotating every 24 hours to prevent cross-day tracking.
+- **Keyed Visitor Hashes**: Viewer IPs are hashed with HMAC-SHA256 and a server secret. The hash is stable, so a repeat visitor is not counted again until `PROFILEPULSE_DEDUPE_DAYS` (default 30) have passed since they were last counted. Hashes are deleted after that period, and raw IPs are never stored.
 - **Strict 30-Day Retention**: Raw telemetry and visitor keys are purged after 30 days. Only aggregate counters are kept.
 - **Zero Cookies**: Sets no tracking cookies and makes no cross-site calls.
 

@@ -4,7 +4,8 @@ Core Research & Engineering Design:
   * Camo Verification: Distinguishes between requests from GitHub's Camo image proxy
     (camo.githubusercontent.com) and direct HTTP/curl hits.
   * Race-Condition Free: Uses atomic PostgreSQL unique constraints with ON CONFLICT DO NOTHING.
-  * Ephemeral Daily Keys: Incorporates the IST date (+05:30) in HMAC hashing so visitor keys rotate daily at IST midnight.
+  * Keyed Visitor Hashes: Viewer IPs are HMAC-hashed with a server secret so repeat visits can be recognized
+    for PROFILEPULSE_DEDUPE_DAYS without storing the IP.
   * Totals Table: O(1) reads for fast badge rendering without slow full-table scans.
   * 30-Day Retention: Automatically prunes raw hit logs while preserving daily and total aggregates.
   * GitHub Account Validation: Validates GitHub username existence to prevent junk spamming.
@@ -73,6 +74,8 @@ validate_secret(ENV, SECRET_STR)
 SECRET = (SECRET_STR or "dev-secret-change-me").encode("utf-8")
 RATE_LIMIT_PER_MIN = int(os.environ.get("PROFILEPULSE_RATE_LIMIT", "60"))
 WINDOW_SECONDS = int(os.environ.get("PROFILEPULSE_WINDOW_SECONDS", "1800"))  # 30 minutes
+# A visitor is counted once, then not again until this many days have passed since they were last counted.
+DEDUPE_DAYS = int(os.environ.get("PROFILEPULSE_DEDUPE_DAYS", "30"))
 RAW_RETENTION_DAYS = int(os.environ.get("PROFILEPULSE_RETENTION_DAYS", "30"))
 GITHUB_VALIDATE_USER = os.environ.get("PROFILEPULSE_VALIDATE_GITHUB_USER", "true").lower() in ("true", "1")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", os.environ.get("PROFILEPULSE_GITHUB_TOKEN", "")).strip()
@@ -255,7 +258,21 @@ def init_db(conn: psycopg.Connection) -> None:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_hits_user_day ON hits(username, day)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_hits_ts ON hits(ts)")
 
-        # 6. IST timestamp columns (migration, non-destructive). Existing rows are kept;
+        # 6. Stable visitor dedupe: one row per visitor, stamped when they were last counted.
+        #    A visitor is counted again only after DEDUPE_DAYS have passed since last_counted.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS visitor_seen (
+                username TEXT NOT NULL,
+                visitor_key TEXT NOT NULL,
+                via_camo INTEGER NOT NULL,
+                last_counted DOUBLE PRECISION NOT NULL,
+                last_counted_ist TEXT,
+                PRIMARY KEY (username, visitor_key, via_camo)
+            )"""
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_visitor_seen_last ON visitor_seen(last_counted)")
+
+        # 7. IST timestamp columns (migration, non-destructive). Existing rows are kept;
         #    new columns are added with IF NOT EXISTS and backfilled from the epoch `ts`.
         ist_expr = "to_char(to_timestamp({col}) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS') || ' IST'"
         migrations = [
@@ -296,6 +313,11 @@ def prune_old_records(conn: psycopg.Connection, retention_days: int = RAW_RETENT
         deleted = cur.rowcount
         cur.execute("DELETE FROM daily_uniques WHERE ts < %s", (cutoff,))
         cur.execute("DELETE FROM active_windows WHERE ts < %s", (cutoff,))
+        # Visitor hashes are only needed while they can still block a repeat count.
+        cur.execute(
+            "DELETE FROM visitor_seen WHERE last_counted < %s",
+            (time.time() - (DEDUPE_DAYS * 86400.0),),
+        )
     conn.commit()
     return deleted
 
@@ -319,16 +341,30 @@ def get_client_ip(request: Request) -> str:
     return "unknown"
 
 
-def visitor_key(day: str, request: Request) -> str:
-    """Generate an ephemeral, daily-rotated HMAC visitor fingerprint.
+def viewer_ip(request: Request) -> str:
+    """Best-effort IP of the person viewing the badge.
 
-    Incorporates the IST day into the HMAC salt so visitor keys rotate at IST midnight.
-    Uses get_client_ip(request).
+    Camo forwards the viewer's IP as the first X-Forwarded-For entry. That entry is only
+    trusted when PROFILEPULSE_TRUST_PROXY is enabled. Without it, the connecting host
+    (GitHub's proxy) is used, which collapses all viewers into one visitor.
     """
-    ip = get_client_ip(request)
-    ua = request.headers.get("user-agent", "")
-    raw = f"{day}|{ip}|{ua}".encode()
-    return hmac.new(SECRET, raw, hashlib.sha256).hexdigest()[:16]
+    if TRUST_PROXY:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if parts:
+                return parts[0]
+    return get_client_ip(request)
+
+
+def visitor_key(request: Request) -> str:
+    """Stable keyed visitor fingerprint: HMAC-SHA256 of the viewer IP with the server secret.
+
+    Not rotated daily, so repeat visits can be recognized for DEDUPE_DAYS.
+    The raw IP is never stored.
+    """
+    ip = viewer_ip(request)
+    return hmac.new(SECRET, f"visitor|{ip}".encode(), hashlib.sha256).hexdigest()[:16]
 
 
 def categorize_ua(ua: str) -> str:
@@ -529,7 +565,7 @@ async def badge(
     day = ist_day(now)  # daily counters reset at IST midnight (00:00 +05:30)
     stamp = ist_stamp(now)
     window_id = int(now // WINDOW_SECONDS)
-    key = visitor_key(day, request)
+    key = visitor_key(request)
 
     ua = request.headers.get("user-agent", "") or ""
     client_cat = categorize_ua(ua)
@@ -547,14 +583,20 @@ async def badge(
 
     with closing(get_db()) as conn, conn.cursor() as cur:
         if not is_preview and not rate_limit_exceeded:
-            # 1. Atomic daily unique insertion (avoids check-then-insert race condition)
+            # 1. Atomic unique check: count a visitor only if they are new, or their last
+            #    counted visit is older than DEDUPE_DAYS. A single statement avoids races.
+            cutoff = now - (DEDUPE_DAYS * 86400.0)
             cur.execute(
-                """INSERT INTO daily_uniques (username, day, visitor_key, via_camo, ts, first_seen_ist)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING""",
-                (user, day, key, is_camo, now, stamp),
+                """INSERT INTO visitor_seen (username, visitor_key, via_camo, last_counted, last_counted_ist)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (username, visitor_key, via_camo) DO UPDATE SET
+                    last_counted = EXCLUDED.last_counted,
+                    last_counted_ist = EXCLUDED.last_counted_ist
+                WHERE visitor_seen.last_counted < %s
+                RETURNING 1""",
+                (user, key, is_camo, now, stamp, cutoff),
             )
-            counted_unique = 1 if cur.rowcount > 0 else 0
+            counted_unique = 1 if cur.fetchone() else 0
 
             # 2. Atomic active window insertion
             cur.execute(
@@ -766,6 +808,7 @@ def report(username: str) -> dict[str, Any]:
 
     return {
         "username": user,
+        "dedupe_days": DEDUPE_DAYS,
         "timezone": IST_LABEL,
         "day_boundary": "Daily counters reset at 00:00 IST (+05:30).",
         "last_updated_ist": tot_row.get("updated_at_ist") if tot_row else None,
@@ -804,9 +847,9 @@ def privacy() -> dict[str, Any]:
         "service": "ProfilePulse",
         "version": __version__,
         "guarantees": [
-            "Zero PII: IP addresses and user agents are never stored in raw form. Only coarse client categories (e.g. github-camo, browser, script) and ephemeral daily HMAC hashes are kept.",
-            "Ephemeral Daily Hashing: Visitor keys are generated using HMAC-SHA256 with the IST (UTC+05:30) date salted in, ensuring hashes rotate daily at IST midnight and cannot be linked across days.",
-            "Strict 30-Day Retention: Raw telemetry and visitor hashes are purged after 30 days. Only aggregated counters are preserved.",
+            "Zero PII: IP addresses and user agents are never stored in raw form. Only coarse client categories (e.g. github-camo, browser, script) and keyed visitor hashes are kept.",
+            "Keyed Visitor Hashing: Visitors are identified by HMAC-SHA256 of their IP with a server-side secret. The hash is stable so repeat visits are not counted again, and it cannot be reversed to an IP without the secret.",
+            "Bounded Hash Lifetime: A visitor hash is deleted once that visitor has not been counted for PROFILEPULSE_DEDUPE_DAYS (default 30 days). Raw telemetry is purged after RAW_RETENTION_DAYS.",
             "No Cookies: ProfilePulse sets zero cookies and performs no cross-site user tracking.",
         ],
         "retention_policy": {
