@@ -64,7 +64,7 @@ Configure via environment variables or a `.env` file:
 | `PROFILEPULSE_DEDUPE_DAYS` | `30` | A visitor is counted once, then not again until this many days have passed since their last counted visit. |
 | `PROFILEPULSE_WINDOW_SECONDS` | `1800` | Duration in seconds for an active window block (default: 30 minutes). |
 | `PROFILEPULSE_RETENTION_DAYS` | `30` | Retention period in days for raw hit logs before automatic pruning. |
-| `PROFILEPULSE_TRUST_PROXY` | `false` | When `true`, honors `X-Forwarded-For`. Set `true` only behind trusted reverse proxies (e.g. Render). |
+| `PROFILEPULSE_TRUST_PROXY` | `false` | When `true`, honors `X-Forwarded-For` so each viewer is identified. Set `true` only behind trusted reverse proxies (e.g. Render). While `false`, counts are badly undercounted (the server logs a warning and `/report` shows the setting). |
 | `PROFILEPULSE_VALIDATE_GITHUB_USER` | `true` | Validates GitHub username existence before tracking hits. |
 | `GITHUB_TOKEN` | `""` | Optional token to raise GitHub user check API limits from 60 to 5,000 req/hr. |
 

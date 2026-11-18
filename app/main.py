@@ -264,6 +264,7 @@ def init_db(conn: psycopg.Connection) -> None:
         # Privacy-safe dedupe diagnostics (counts and IP version only, never the IP itself).
         cur.execute("ALTER TABLE hits ADD COLUMN IF NOT EXISTS xff_count INTEGER")
         cur.execute("ALTER TABLE hits ADD COLUMN IF NOT EXISTS ip_version TEXT")
+        cur.execute("ALTER TABLE hits ADD COLUMN IF NOT EXISTS burst_collapsed INTEGER NOT NULL DEFAULT 0")
 
         # 6. Stable visitor dedupe: one row per visitor, stamped when they were last counted.
         #    A visitor is counted again only after DEDUPE_DAYS have passed since last_counted.
@@ -542,6 +543,16 @@ def normalize_metric(metric: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not TRUST_PROXY:
+        message = (
+            "PROFILEPULSE_TRUST_PROXY is off: every viewer appears as GitHub's proxy address, "
+            "so repeat visitors cannot be told apart and counts will be badly undercounted. "
+            "Enable it behind Render or another trusted reverse proxy."
+        )
+        if ENV == "production":
+            logger.warning(message, extra={"props": {"trust_proxy": False, "env": ENV}})
+        else:
+            logger.info(message, extra={"props": {"trust_proxy": False, "env": ENV}})
     if DATABASE_URL:
         try:
             with closing(get_db()) as conn:
@@ -628,6 +639,7 @@ async def badge(
 
             # 1b. Atomic unique check: count a visitor only if they are new, or their last
             #     counted visit is older than DEDUPE_DAYS. A single statement avoids races.
+            burst_collapsed = 1 if in_burst else 0
             if in_burst:
                 counted_unique = 0
             else:
@@ -706,10 +718,10 @@ async def badge(
             cur.execute(
                 """INSERT INTO hits (
                     ts, day, username, visitor_key, client_type,
-                    via_camo, conditional, counted_unique, ts_ist, xff_count, ip_version
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    via_camo, conditional, counted_unique, ts_ist, xff_count, ip_version, burst_collapsed
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (now, day, user, key, client_cat, is_camo, is_conditional, counted_unique, stamp,
-                 xff_count, ip_version),
+                 xff_count, ip_version, burst_collapsed),
             )
             conn.commit()
 
@@ -760,10 +772,10 @@ async def badge(
 
     # Compute label and display value
     if view == "split":
-        display_label = label[:32] if label else "Profile Views"
+        display_label = label[:32] if label else "Visitors (est.)"
         display_value = f"{format_number(today_unique)} today · {format_number(total_unique)} total"
     elif metric_type == "today":
-        display_label = label[:32] if label else "Today's Uniques"
+        display_label = label[:32] if label else "Visitors Today (est.)"
         display_value = format_number(today_unique)
     elif metric_type == "windows":
         display_label = label[:32] if label else "Active Windows"
@@ -772,7 +784,7 @@ async def badge(
         display_label = label[:32] if label else "Badge Loads"
         display_value = format_number(total_loads)
     else:  # 'unique' (default)
-        display_label = label[:32] if label else "Total Unique Visitors"
+        display_label = label[:32] if label else "Unique Visitors (est.)"
         display_value = format_number(total_unique)
 
     svg_content = render_svg(display_label, display_value, color)
@@ -853,9 +865,26 @@ def report(username: str) -> dict[str, Any]:
     total_loads = tot["camo_loads"] + tot["direct_loads"]
     camo_pct = round((tot["camo_loads"] / total_loads * 100), 1) if total_loads > 0 else 0.0
 
+    with closing(get_db()) as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM hits WHERE username = %s AND burst_collapsed = 1", (user,))
+        burst_row = cur.fetchone()
+    burst_collapses = burst_row["n"] if burst_row else 0
+
     return {
         "username": user,
         "dedupe_days": DEDUPE_DAYS,
+        "trust_proxy": TRUST_PROXY,
+        "viewer_identity": (
+            "First X-Forwarded-For entry (viewer IP), hashed"
+            if TRUST_PROXY
+            else "Connecting host only (GitHub proxy). Repeat visitors cannot be told apart; counts are undercounted."
+        ),
+        "today_definition": "Visitors first counted today, IST (+05:30). Repeat visits within the dedupe period are not counted again.",
+        "burst_collapses": burst_collapses,
+        "burst_collapses_note": (
+            f"Double loads of the same profile within {BURST_SECONDS} seconds, counted as one visit. "
+            f"Covers the raw-log retention window ({RAW_RETENTION_DAYS} days)."
+        ),
         "timezone": IST_LABEL,
         "day_boundary": "Daily counters reset at 00:00 IST (+05:30).",
         "last_updated_ist": tot_row.get("updated_at_ist") if tot_row else None,

@@ -184,6 +184,7 @@ def test_double_fetch_in_one_page_load_counts_once(client, monkeypatch):
     rep = client.get("/report/burstuser").json()
     assert rep["metrics"]["camo_proxied"]["badge_loads"] == 2
     assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 1
+    assert rep["burst_collapses"] == 1
 
     # After the burst window has passed, a new visitor counts again
     conn = app_module.get_db()
@@ -194,6 +195,17 @@ def test_double_fetch_in_one_page_load_counts_once(client, monkeypatch):
     client.get("/badge/burstuser", headers={"User-Agent": "github-camo (3)", "X-Forwarded-For": "198.51.100.63"})
     rep = client.get("/report/burstuser").json()
     assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 2
+
+
+def test_report_states_viewer_identity_and_trust(client, monkeypatch):
+    require_test_db()
+    monkeypatch.setattr(app_module, "TRUST_PROXY", False)
+    client.get("/badge/trustuser", headers={"User-Agent": "github-camo (5)"})
+    rep = client.get("/report/trustuser").json()
+    assert rep["trust_proxy"] is False
+    assert "undercounted" in rep["viewer_identity"]
+    assert rep["today_definition"].startswith("Visitors first counted today")
+    assert rep["burst_collapses"] == 0
 
 
 def test_diagnostics_store_counts_not_ips(client, monkeypatch):
@@ -262,7 +274,7 @@ def test_badge_views_split_and_today(client):
     # Today metric
     today_resp = client.get("/badge/splituser?metric=today", headers=camo_headers)
     assert today_resp.status_code == 200
-    assert "Today&#39;s Uniques" in today_resp.text
+    assert "Visitors Today (est.)" in today_resp.text
 
 
 def test_preview_mode(client):
