@@ -32,7 +32,7 @@ import psycopg
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from psycopg.rows import dict_row
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Indian Standard Time (UTC+05:30). Daily counters roll over at IST midnight,
 # and human-readable timestamp columns are stored in IST.

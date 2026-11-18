@@ -2,6 +2,34 @@
 
 All notable changes to ProfilePulse will be documented in this file.
 
+## [0.5.0] - 2026-11-18
+
+### Counting
+- **Rolling dedupe period**: A visitor is counted once per `PROFILEPULSE_DEDUPE_DAYS` (default 30), not once per day. Repeat visits no longer add to the count.
+- **Stable keyed visitor hash**: Visitors are identified by HMAC-SHA256 of the viewer IP. The hash no longer changes daily. Raw IPs are never stored.
+- **Burst collapse**: Double loads of the same profile by the same client type within `PROFILEPULSE_BURST_SECONDS` (default 60) count as one visit.
+- **IPv6 grouping**: IPv6 viewer addresses are grouped by /64 prefix, so one connection keeps one visitor key.
+- **Honest labels**: Default badge labels are "Visitors (est.)", "Visitors Today (est.)", and "Unique Visitors (est.)". `?label=` still overrides them.
+
+### Reporting & Diagnostics
+- `/report` shows `dedupe_days`, `trust_proxy`, `viewer_identity`, `today_definition`, and `burst_collapses`.
+- `hits` records `xff_count` and `ip_version` (counts and IP version only, never the IP).
+- Startup warning when `PROFILEPULSE_TRUST_PROXY` is off, since viewers cannot be told apart and counts are undercounted.
+
+### Database
+- New `visitor_seen` table. Migrations are non-destructive (`ADD COLUMN IF NOT EXISTS`); existing rows are kept.
+- `daily_uniques` is no longer written. It is kept for history and planned for removal.
+
+### Docs
+- Calibration protocol in `docs/CALIBRATION.md`.
+- `ARCHITECTURE.md` updated for PostgreSQL and the new dedupe design.
+
+## [0.4.0] - 2026-11-18
+
+### Time Zone (IST)
+- **IST daily reset**: Daily counters and visitor keys roll over at 00:00 IST (+05:30), not UTC midnight.
+- **IST timestamps**: Added `ts_ist`, `first_seen_ist`, and `updated_at_ist` columns (backfilled from existing rows). `/report` shows `timezone` and `last_updated_ist`.
+
 ## [0.3.0] - 2026-11-08
 
 ### Database Migration & Production Deployment
