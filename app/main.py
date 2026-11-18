@@ -79,6 +79,10 @@ DEDUPE_DAYS = int(os.environ.get("PROFILEPULSE_DEDUPE_DAYS", "30"))
 # Loads of the same profile by the same client type within this many seconds are one visit
 # (a double fetch in one page load), even if they arrive with different viewer keys.
 BURST_SECONDS = int(os.environ.get("PROFILEPULSE_BURST_SECONDS", "60"))
+# Owner exclusion (opt-in): comma-separated visitor keys (from the hits table) whose loads are not counted.
+OWNER_VISITOR_KEYS = frozenset(
+    k.strip() for k in os.environ.get("PROFILEPULSE_OWNER_VISITOR_KEYS", "").split(",") if k.strip()
+)
 RAW_RETENTION_DAYS = int(os.environ.get("PROFILEPULSE_RETENTION_DAYS", "30"))
 GITHUB_VALIDATE_USER = os.environ.get("PROFILEPULSE_VALIDATE_GITHUB_USER", "true").lower() in ("true", "1")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", os.environ.get("PROFILEPULSE_GITHUB_TOKEN", "")).strip()
@@ -360,9 +364,20 @@ def viewer_ip(request: Request) -> str:
         xff = request.headers.get("x-forwarded-for")
         if xff:
             parts = [p.strip() for p in xff.split(",") if p.strip()]
-            if parts:
+            if parts and _is_valid_ip(parts[0]):
                 return parts[0]
     return get_client_ip(request)
+
+
+def _is_valid_ip(value: str) -> bool:
+    """True only for a syntactically valid IP address. Rejects junk, which would otherwise become a visitor key."""
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def normalize_ip(ip: str) -> str:
@@ -609,6 +624,7 @@ async def badge(
     stamp = ist_stamp(now)
     window_id = int(now // WINDOW_SECONDS)
     key = visitor_key(request)
+    is_owner = key in OWNER_VISITOR_KEYS
     xff_count, ip_version = viewer_diagnostics(request)
 
     ua = request.headers.get("user-agent", "") or ""
@@ -626,7 +642,7 @@ async def badge(
             raise HTTPException(status_code=404, detail=f"GitHub user '{user}' does not exist.")
 
     with closing(get_db()) as conn, conn.cursor() as cur:
-        if not is_preview and not rate_limit_exceeded:
+        if not is_preview and not rate_limit_exceeded and not is_owner:
             # 1a. Burst collapse: a second counted load of this profile by the same client
             #     type within BURST_SECONDS is the same page load, not a new visitor.
             cur.execute(
@@ -874,6 +890,7 @@ def report(username: str) -> dict[str, Any]:
         "username": user,
         "dedupe_days": DEDUPE_DAYS,
         "trust_proxy": TRUST_PROXY,
+        "owner_exclusion_keys_configured": len(OWNER_VISITOR_KEYS),
         "viewer_identity": (
             "First X-Forwarded-For entry (viewer IP), hashed"
             if TRUST_PROXY

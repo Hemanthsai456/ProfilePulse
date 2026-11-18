@@ -61,6 +61,7 @@ Configure via environment variables or a `.env` file:
 | `PROFILEPULSE_ENV` | `development` | Mode: `development` or `production`. In production, secure secret checks are enforced. |
 | `PROFILEPULSE_SECRET` | `dev-secret-change-me` | Secret for HMAC hashing visitor fingerprints. Must be a secure 16+ char key in production. |
 | `PROFILEPULSE_RATE_LIMIT` | `60` | Maximum requests per minute per client IP before rate limiting. |
+| `PROFILEPULSE_OWNER_VISITOR_KEYS` | _(empty)_ | Optional comma-separated visitor keys to exclude from counts (your own visits). Find your key with the `hits` query in `docs/CALIBRATION.md`. Only excludes loads from that same key, so visits from another network still count. |
 | `PROFILEPULSE_DEDUPE_DAYS` | `30` | A visitor is counted once, then not again until this many days have passed since their last counted visit. |
 | `PROFILEPULSE_WINDOW_SECONDS` | `1800` | Duration in seconds for an active window block (default: 30 minutes). |
 | `PROFILEPULSE_RETENTION_DAYS` | `30` | Retention period in days for raw hit logs before automatic pruning. |

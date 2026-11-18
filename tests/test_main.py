@@ -197,6 +197,55 @@ def test_double_fetch_in_one_page_load_counts_once(client, monkeypatch):
     assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 2
 
 
+def test_owner_visitor_keys_are_not_counted(client, monkeypatch):
+    require_test_db()
+    monkeypatch.setattr(app_module, "TRUST_PROXY", True)
+    monkeypatch.setattr(app_module, "BURST_SECONDS", 0)
+    owner_headers = {"User-Agent": "github-camo (own)", "X-Forwarded-For": "198.51.100.90"}
+    client.get("/badge/owneruser", headers=owner_headers)
+    rep = client.get("/report/owneruser").json()
+    assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 1
+
+    # Read the owner's key from the hit log, then exclude it
+    conn = app_module.get_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT visitor_key FROM hits WHERE username = %s", ("owneruser",))
+        owner_key = cur.fetchone()["visitor_key"]
+    conn.close()
+    monkeypatch.setattr(app_module, "OWNER_VISITOR_KEYS", frozenset({owner_key}))
+
+    # The owner's loads no longer count
+    client.get("/badge/owneruser", headers=owner_headers)
+    client.get("/badge/owneruser", headers=owner_headers)
+    rep = client.get("/report/owneruser").json()
+    assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 1
+    assert rep["owner_exclusion_keys_configured"] == 1
+
+    # Another viewer still counts
+    client.get("/badge/owneruser", headers={"User-Agent": "github-camo (x)", "X-Forwarded-For": "198.51.100.91"})
+    rep = client.get("/report/owneruser").json()
+    assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 2
+
+
+def test_malformed_forwarded_address_is_ignored():
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "headers": [(b"x-forwarded-for", b"not-an-ip, 203.0.113.9")],
+        "client": ("10.1.1.1", 1234),
+    }
+    monkeypatch_value = app_module.TRUST_PROXY
+    app_module.TRUST_PROXY = True
+    try:
+        ip = app_module.viewer_ip(Request(scope))
+    finally:
+        app_module.TRUST_PROXY = monkeypatch_value
+    # First entry is junk, so the viewer is not taken from it
+    assert ip != "not-an-ip"
+    assert ip == "203.0.113.9"
+
+
 def test_report_states_viewer_identity_and_trust(client, monkeypatch):
     require_test_db()
     monkeypatch.setattr(app_module, "TRUST_PROXY", False)
