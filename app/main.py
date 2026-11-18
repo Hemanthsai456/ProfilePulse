@@ -76,6 +76,9 @@ RATE_LIMIT_PER_MIN = int(os.environ.get("PROFILEPULSE_RATE_LIMIT", "60"))
 WINDOW_SECONDS = int(os.environ.get("PROFILEPULSE_WINDOW_SECONDS", "1800"))  # 30 minutes
 # A visitor is counted once, then not again until this many days have passed since they were last counted.
 DEDUPE_DAYS = int(os.environ.get("PROFILEPULSE_DEDUPE_DAYS", "30"))
+# Loads of the same profile by the same client type within this many seconds are one visit
+# (a double fetch in one page load), even if they arrive with different viewer keys.
+BURST_SECONDS = int(os.environ.get("PROFILEPULSE_BURST_SECONDS", "60"))
 RAW_RETENTION_DAYS = int(os.environ.get("PROFILEPULSE_RETENTION_DAYS", "30"))
 GITHUB_VALIDATE_USER = os.environ.get("PROFILEPULSE_VALIDATE_GITHUB_USER", "true").lower() in ("true", "1")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", os.environ.get("PROFILEPULSE_GITHUB_TOKEN", "")).strip()
@@ -257,6 +260,10 @@ def init_db(conn: psycopg.Connection) -> None:
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_hits_user_day ON hits(username, day)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_hits_ts ON hits(ts)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_hits_burst ON hits(username, via_camo, ts)")
+        # Privacy-safe dedupe diagnostics (counts and IP version only, never the IP itself).
+        cur.execute("ALTER TABLE hits ADD COLUMN IF NOT EXISTS xff_count INTEGER")
+        cur.execute("ALTER TABLE hits ADD COLUMN IF NOT EXISTS ip_version TEXT")
 
         # 6. Stable visitor dedupe: one row per visitor, stamped when they were last counted.
         #    A visitor is counted again only after DEDUPE_DAYS have passed since last_counted.
@@ -357,13 +364,38 @@ def viewer_ip(request: Request) -> str:
     return get_client_ip(request)
 
 
+def normalize_ip(ip: str) -> str:
+    """Collapse an IPv6 address to its /64 prefix, so one connection keeps one visitor key
+    even when the address changes within the prefix. IPv4 addresses are returned unchanged."""
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(addr)
+
+
+def viewer_diagnostics(request: Request) -> tuple[int, str]:
+    """Privacy-safe diagnostics for dedupe debugging: the number of X-Forwarded-For entries
+    and the IP version ('v4', 'v6' or 'none'). Never returns the raw IP."""
+    xff = request.headers.get("x-forwarded-for", "") if TRUST_PROXY else ""
+    count = len([p for p in xff.split(",") if p.strip()])
+    ip = viewer_ip(request)
+    if not ip or ip == "unknown":
+        return count, "none"
+    return count, ("v6" if ":" in ip else "v4")
+
+
 def visitor_key(request: Request) -> str:
-    """Stable keyed visitor fingerprint: HMAC-SHA256 of the viewer IP with the server secret.
+    """Stable keyed visitor fingerprint: HMAC-SHA256 of the normalized viewer IP with the server secret.
 
     Not rotated daily, so repeat visits can be recognized for DEDUPE_DAYS.
     The raw IP is never stored.
     """
-    ip = viewer_ip(request)
+    ip = normalize_ip(viewer_ip(request))
     return hmac.new(SECRET, f"visitor|{ip}".encode(), hashlib.sha256).hexdigest()[:16]
 
 
@@ -566,6 +598,7 @@ async def badge(
     stamp = ist_stamp(now)
     window_id = int(now // WINDOW_SECONDS)
     key = visitor_key(request)
+    xff_count, ip_version = viewer_diagnostics(request)
 
     ua = request.headers.get("user-agent", "") or ""
     client_cat = categorize_ua(ua)
@@ -583,20 +616,33 @@ async def badge(
 
     with closing(get_db()) as conn, conn.cursor() as cur:
         if not is_preview and not rate_limit_exceeded:
-            # 1. Atomic unique check: count a visitor only if they are new, or their last
-            #    counted visit is older than DEDUPE_DAYS. A single statement avoids races.
-            cutoff = now - (DEDUPE_DAYS * 86400.0)
+            # 1a. Burst collapse: a second counted load of this profile by the same client
+            #     type within BURST_SECONDS is the same page load, not a new visitor.
             cur.execute(
-                """INSERT INTO visitor_seen (username, visitor_key, via_camo, last_counted, last_counted_ist)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (username, visitor_key, via_camo) DO UPDATE SET
-                    last_counted = EXCLUDED.last_counted,
-                    last_counted_ist = EXCLUDED.last_counted_ist
-                WHERE visitor_seen.last_counted < %s
-                RETURNING 1""",
-                (user, key, is_camo, now, stamp, cutoff),
+                """SELECT 1 FROM hits
+                WHERE username = %s AND via_camo = %s AND counted_unique = 1 AND ts > %s
+                LIMIT 1""",
+                (user, is_camo, now - BURST_SECONDS),
             )
-            counted_unique = 1 if cur.fetchone() else 0
+            in_burst = cur.fetchone() is not None
+
+            # 1b. Atomic unique check: count a visitor only if they are new, or their last
+            #     counted visit is older than DEDUPE_DAYS. A single statement avoids races.
+            if in_burst:
+                counted_unique = 0
+            else:
+                cutoff = now - (DEDUPE_DAYS * 86400.0)
+                cur.execute(
+                    """INSERT INTO visitor_seen (username, visitor_key, via_camo, last_counted, last_counted_ist)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (username, visitor_key, via_camo) DO UPDATE SET
+                        last_counted = EXCLUDED.last_counted,
+                        last_counted_ist = EXCLUDED.last_counted_ist
+                    WHERE visitor_seen.last_counted < %s
+                    RETURNING 1""",
+                    (user, key, is_camo, now, stamp, cutoff),
+                )
+                counted_unique = 1 if cur.fetchone() else 0
 
             # 2. Atomic active window insertion
             cur.execute(
@@ -660,9 +706,10 @@ async def badge(
             cur.execute(
                 """INSERT INTO hits (
                     ts, day, username, visitor_key, client_type,
-                    via_camo, conditional, counted_unique, ts_ist
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (now, day, user, key, client_cat, is_camo, is_conditional, counted_unique, stamp),
+                    via_camo, conditional, counted_unique, ts_ist, xff_count, ip_version
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (now, day, user, key, client_cat, is_camo, is_conditional, counted_unique, stamp,
+                 xff_count, ip_version),
             )
             conn.commit()
 

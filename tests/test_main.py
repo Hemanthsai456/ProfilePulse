@@ -157,6 +157,7 @@ def test_camo_vs_direct_counting(client):
 def test_atomic_unique_deduplication(client, monkeypatch):
     require_test_db()
     monkeypatch.setattr(app_module, "TRUST_PROXY", True)
+    monkeypatch.setattr(app_module, "BURST_SECONDS", 0)
     # Two camo requests from the same viewer IP count once
     camo_headers = {"User-Agent": "github-camo (123)", "X-Forwarded-For": "198.51.100.10"}
     client.get("/badge/uniquetest", headers=camo_headers)
@@ -172,10 +173,57 @@ def test_atomic_unique_deduplication(client, monkeypatch):
     assert ">2<" in resp3.text
 
 
+def test_double_fetch_in_one_page_load_counts_once(client, monkeypatch):
+    require_test_db()
+    monkeypatch.setattr(app_module, "TRUST_PROXY", True)
+    monkeypatch.setattr(app_module, "BURST_SECONDS", 60)
+    # Same page load, two requests whose viewer IPs differ (the owner's double open)
+    client.get("/badge/burstuser", headers={"User-Agent": "github-camo (1)", "X-Forwarded-For": "198.51.100.61"})
+    client.get("/badge/burstuser", headers={"User-Agent": "github-camo (2)", "X-Forwarded-For": "198.51.100.62"})
+
+    rep = client.get("/report/burstuser").json()
+    assert rep["metrics"]["camo_proxied"]["badge_loads"] == 2
+    assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 1
+
+    # After the burst window has passed, a new visitor counts again
+    conn = app_module.get_db()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE hits SET ts = ts - 120 WHERE username = %s", ("burstuser",))
+    conn.commit()
+    conn.close()
+    client.get("/badge/burstuser", headers={"User-Agent": "github-camo (3)", "X-Forwarded-For": "198.51.100.63"})
+    rep = client.get("/report/burstuser").json()
+    assert rep["metrics"]["camo_proxied"]["total_uniques_est"] == 2
+
+
+def test_diagnostics_store_counts_not_ips(client, monkeypatch):
+    require_test_db()
+    monkeypatch.setattr(app_module, "TRUST_PROXY", True)
+    client.get(
+        "/badge/diaguser",
+        headers={"User-Agent": "github-camo (9)", "X-Forwarded-For": "2001:db8:1:2::7, 10.0.0.1"},
+    )
+    conn = app_module.get_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT xff_count, ip_version FROM hits WHERE username = %s", ("diaguser",))
+        row = cur.fetchone()
+    conn.close()
+    assert row["xff_count"] == 2
+    assert row["ip_version"] == "v6"
+
+
+def test_normalize_ip_collapses_ipv6_slash64():
+    same_a = app_module.normalize_ip("2001:db8:1:2:aaaa::1")
+    same_b = app_module.normalize_ip("2001:db8:1:2:bbbb::9")
+    assert same_a == same_b
+    assert app_module.normalize_ip("203.0.113.5") == "203.0.113.5"
+
+
 def test_repeat_visitor_counted_once_per_dedupe_period(client, monkeypatch):
     require_test_db()
     monkeypatch.setattr(app_module, "TRUST_PROXY", True)
     monkeypatch.setattr(app_module, "DEDUPE_DAYS", 30)
+    monkeypatch.setattr(app_module, "BURST_SECONDS", 0)
     headers = {"User-Agent": "github-camo (789)", "X-Forwarded-For": "198.51.100.50"}
 
     # Repeated visits within the period count once
