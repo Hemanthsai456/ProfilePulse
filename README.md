@@ -98,13 +98,25 @@ Customizes the badge text and right-side color (e.g., `blue`, `green`, `brightgr
 [![Profile Views](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?label=Profile+Views&color=blue)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
 ```
 
-#### 8. Split View with Custom Styling
-Combines split metrics (`today · total`) with custom label and branding color:
+#### 8. Four-Part Dual Badge with Custom Colors
+Independently style each segment of the default badge (e.g., green on the left, blue `#2C81F5` on the right):
+```markdown
+[![Profile Views](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?label_color=2ea043&color=2ea043&label2_color=2C81F5&color2=2C81F5)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 9. Side-by-Side Badges (Two Badges on One Line)
+Render any two independent metrics side-by-side on GitHub by placing them without a blank line break:
+```markdown
+[![Total Loads](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?metric=loads&color=2C81F5)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME) [![Today](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?metric=today&color=2ea043)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 10. Split View with Custom Styling
+Combines split metrics (`Today | X | Total | Y`) with custom label and branding color:
 ```markdown
 [![Visitors](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?view=split&label=Visitors&color=2ea043)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
 ```
 
-#### 9. Preview Mode (Non-Incrementing)
+#### 11. Preview Mode (Non-Incrementing)
 Renders the badge live without incrementing counters or logging hits — ideal for testing layouts:
 ```markdown
 [![Preview](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?preview=true)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
