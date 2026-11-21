@@ -48,6 +48,58 @@ Embed the badge in your GitHub README using your deployed host:
 | `source` | `camo` (default), `all`, `direct` | Traffic source filter. In production, default `camo` counts only GitHub proxy hits. |
 | `preview` | `true`, `false` (default) | Renders the badge without incrementing or recording hits (alias: `ignore_owner`). |
 
+### 🎨 Badge Variations & Examples
+
+Select and copy any variation below directly into your GitHub profile `README.md` (replace `YOUR-HOST` and `YOUR_GITHUB_USERNAME`):
+
+#### 1. Unique Visitors (Default)
+Displays estimated all-time unique visitors over the rolling deduplication period:
+```markdown
+[![Unique Visitors](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 2. Today's Visitors
+Displays unique visitors for the current day (resets at 00:00 IST):
+```markdown
+[![Visitors Today](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?metric=today)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 3. Split View (Today · Total)
+Displays both today's visitors and all-time total within a single badge (`X today · Y total`):
+```markdown
+[![Profile Views](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?view=split)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 4. Total Badge Loads (Raw Impressions)
+Displays total times the badge has been fetched and rendered, including repeated loads:
+```markdown
+[![Badge Loads](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?metric=loads)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 5. Active Windows (30-Minute Blocks)
+Displays the count of distinct 30-minute visitor activity blocks:
+```markdown
+[![Active Windows](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?metric=windows)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 6. Custom Label & Color
+Customizes the badge text and right-side color (e.g., `blue`, `green`, `brightgreen`, `orange`, `red`, `yellow`, `gray`, or hex code `#0969da`):
+```markdown
+[![Profile Views](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?label=Profile+Views&color=blue)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 7. Split View with Custom Styling
+Combines split metrics (`today · total`) with custom label and branding color:
+```markdown
+[![Visitors](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?view=split&label=Visitors&color=2ea043)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
+#### 8. Preview Mode (Non-Incrementing)
+Renders the badge live without incrementing counters or logging hits — ideal for testing layouts:
+```markdown
+[![Preview](https://YOUR-HOST/badge/YOUR_GITHUB_USERNAME?preview=true)](https://YOUR-HOST/report/YOUR_GITHUB_USERNAME)
+```
+
 ---
 
 ## ⚙️ Configuration
