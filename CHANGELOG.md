@@ -35,7 +35,7 @@ All notable changes to ProfilePulse will be documented in this file.
 ### Database Migration & Production Deployment
 - **PostgreSQL Migration (`psycopg` v3)**: Replaced SQLite with PostgreSQL using `psycopg` (v3). Schema updated to use `BIGSERIAL`, PostgreSQL parameter placeholders (`%s`), `INSERT ... ON CONFLICT DO NOTHING`, and atomic upserts with `EXCLUDED.` syntax.
 - **Connection Masking**: Added credential masking for database URLs in logs and `/health` degradation messages to prevent credential leakage.
-- **Render & Neon Support**: Added `render.yaml` Blueprint specification for deploying the Docker container on Render with environment variable configurations (`DATABASE_URL`, auto-generated `PROFILEPULSE_SECRET`, `PROFILEPULSE_TRUST_PROXY`).
+- **Render & PostgreSQL/Supabase Support**: Added `render.yaml` Blueprint specification for deploying the Docker container on Render with environment variable configurations (`DATABASE_URL`, auto-generated `PROFILEPULSE_SECRET`, `PROFILEPULSE_TRUST_PROXY`).
 - **Proxy Client IP Detection**: Configured `get_client_ip` to inspect the trailing IP in `X-Forwarded-For` when `PROFILEPULSE_TRUST_PROXY=true`, correctly identifying client IPs behind Render's reverse proxy while protecting against client header spoofing.
 - **Test Isolation**: Updated test suite to strictly require `TEST_DATABASE_URL` (dropping and recreating tables before each test), preventing test execution against production `DATABASE_URL` and skipping database tests cleanly when `TEST_DATABASE_URL` is omitted.
 - **Local Dev Compose**: Added a `postgres:16-alpine` service to `docker-compose.yml` with persistent volume `postgres_data`.

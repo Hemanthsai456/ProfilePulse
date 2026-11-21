@@ -56,7 +56,7 @@ Configure via environment variables or a `.env` file:
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | *Required* | PostgreSQL connection string (production Neon or local container). |
+| `DATABASE_URL` | *Required* | PostgreSQL connection string (production Supabase or local container). |
 | `TEST_DATABASE_URL` | *None* | Dedicated PostgreSQL test database URL used strictly by the test suite. |
 | `PROFILEPULSE_ENV` | `development` | Mode: `development` or `production`. In production, secure secret checks are enforced. |
 | `PROFILEPULSE_SECRET` | `dev-secret-change-me` | Secret for HMAC hashing visitor fingerprints. Must be a secure 16+ char key in production. |
@@ -86,7 +86,7 @@ ProfilePulse adheres to strict privacy guarantees matching `/privacy`:
 - **Estimates Only**: Static image embeds cannot observe viewport visibility or tab focus; counts reflect observed requests.
 - **Camo Caching**: GitHub's Camo proxy caches images for variable intervals, which may coalesce rapid visits into fewer requests.
 - **In-Memory Rate Limiting**: The sliding-window rate limiter is stored in-memory per process; it resets on restarts and does not coordinate across multi-worker deployments.
-- **Free Tier Cold Starts & Database Pauses**: Render's free tier sleeps after 15 minutes of inactivity, and Neon's free compute pauses when idle. Keep-warm pinging (e.g. via UptimeRobot every 5 minutes on `/health`) prevents cold starts.
+- **Free Tier Cold Starts & Database Pauses**: Render's free tier sleeps after 15 minutes of inactivity, and Supabase free projects pause after a week of inactivity. Keep-warm pinging (e.g. via UptimeRobot every 5 minutes on `/health`) prevents cold starts and keeps the database active.
 - **Reverse Proxy Headers**: `PROFILEPULSE_TRUST_PROXY` must be set to `true` when deployed behind Render or other reverse proxies so that client IPs are extracted safely.
 
 ---

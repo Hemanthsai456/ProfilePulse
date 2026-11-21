@@ -1,21 +1,22 @@
-# Deployment Guide (Render + Neon)
+# Deployment Guide (Render + Supabase)
 
-This guide covers deploying ProfilePulse using **Neon** (Serverless PostgreSQL) and **Render** (Container Web Service via Blueprint).
+This guide covers deploying ProfilePulse using **Supabase** (PostgreSQL) and **Render** (Container Web Service via Blueprint).
 
 > **Note on Free Tiers & Cold Starts:**
 > - Render free web services spin down (sleep) after 15 minutes of inactivity. The first incoming request after sleep takes 30–50 seconds to respond as the container boots up.
-> - Neon free databases compute-pause when idle and resume automatically upon connection (typically 500ms–1s).
-> - Setting up a free external monitoring ping (such as UptimeRobot) every 5 minutes against `/health` helps keep the service warm and responsive.
+> - Supabase free projects pause after a week of inactivity.
+> - Setting up a free external monitoring ping (such as UptimeRobot) every 5 minutes against `/health` helps keep the service warm and responsive, and keeps the database active.
 
 ---
 
-## 1. Create the Neon Database
+## 1. Get the Supabase Database Connection String
 
-1. Go to [Neon Console](https://console.neon.tech/) and create a free project (e.g. `profilepulse`).
-2. Copy the **Connection Details** (PostgreSQL connection string).
-3. Ensure `sslmode=require` is present at the end of the connection string:
+1. Go to the [Supabase Dashboard](https://supabase.com/dashboard) and select your project.
+2. Navigate to **Project Settings** → **Database**.
+3. Under **Connection string**, select **URI** (or Connection pooling with Session mode on port 5432).
+4. Copy the connection string and ensure `sslmode=require` is present:
    ```text
-   postgresql://neondb_owner:YOUR_PASSWORD@ep-xyz-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require
+   postgresql://postgres.[PROJECT-REF]:YOUR_PASSWORD@aws-0-[REGION].pooler.supabase.com:5432/postgres?sslmode=require
    ```
 
 ---
@@ -32,7 +33,7 @@ ProfilePulse includes a `render.yaml` Blueprint file at the repository root.
    - `PROFILEPULSE_ENV` is pre-set to `production`.
    - `PROFILEPULSE_SECRET` is automatically generated with a secure random string.
    - `PROFILEPULSE_TRUST_PROXY` is set to `true` (enabling Render reverse proxy IP extraction).
-   - `DATABASE_URL`: Set this manually by pasting your Neon PostgreSQL connection string.
+   - `DATABASE_URL`: Set this manually by pasting your Supabase PostgreSQL connection string.
 6. Click **Apply**. Render will build the Docker container, run database schema initialization at startup, and start the service.
 
 ---

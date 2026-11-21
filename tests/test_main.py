@@ -1,4 +1,4 @@
-"""Unit and integration tests for ProfilePulse (PostgreSQL / Neon)."""
+"""Unit and integration tests for ProfilePulse (PostgreSQL / Supabase)."""
 
 import concurrent.futures
 import os
