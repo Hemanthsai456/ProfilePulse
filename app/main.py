@@ -288,8 +288,9 @@ def init_db(conn: psycopg.Connection) -> None:
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_visitor_seen_last ON visitor_seen(last_counted)")
 
-        # 7. IST timestamp columns (migration, non-destructive). Existing rows are kept;
-        #    new columns are added with IF NOT EXISTS and backfilled from the epoch `ts`.
+        # 7. IST timestamp columns (migration, non-destructive). Existing rows are kept.
+        #    A column is added and backfilled from the epoch `ts` only the first time it is
+        #    missing, so ordinary startups do not scan whole tables.
         ist_expr = "to_char(to_timestamp({col}) AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI:SS') || ' IST'"
         migrations = [
             ("hits", "ts_ist", "ts"),
@@ -298,10 +299,16 @@ def init_db(conn: psycopg.Connection) -> None:
             ("user_totals", "updated_at_ist", "updated_at"),
         ]
         for table, column, src in migrations:
-            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT")
             cur.execute(
-                f"UPDATE {table} SET {column} = {ist_expr.format(col=src)} WHERE {column} IS NULL"
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = %s AND column_name = %s",
+                (table, column),
             )
+            if cur.fetchone() is None:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+                cur.execute(
+                    f"UPDATE {table} SET {column} = {ist_expr.format(col=src)} WHERE {column} IS NULL"
+                )
 
         # 8. Row Level Security on every app table. Supabase's Data API exposes the public
         #    schema, so without RLS anyone with the project URL and anon key could read hits and

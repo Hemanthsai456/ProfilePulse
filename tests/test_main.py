@@ -246,6 +246,22 @@ def test_malformed_forwarded_address_is_ignored():
     assert ip == "203.0.113.9"
 
 
+def test_ordinary_startup_does_not_rescan_timestamps(client):
+    require_test_db()
+    client.get("/badge/backfilluser", headers={"User-Agent": "github-camo (bf)"})
+    conn = app_module.get_db()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE hits SET ts_ist = NULL WHERE username = %s", ("backfilluser",))
+    conn.commit()
+    # Column already exists, so startup must not backfill it again
+    app_module.init_db(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT ts_ist FROM hits WHERE username = %s", ("backfilluser",))
+        row = cur.fetchone()
+    conn.close()
+    assert row["ts_ist"] is None
+
+
 def test_row_level_security_enabled_on_all_app_tables():
     require_test_db()
     conn = app_module.get_db()
