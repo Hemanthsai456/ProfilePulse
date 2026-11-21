@@ -131,13 +131,14 @@ def test_privacy_endpoint(client):
 
 def test_badge_security_and_cache_headers(client):
     require_test_db()
-    response = client.get("/badge/testuser", headers={"User-Agent": "github-camo (abc)"})
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "image/svg+xml"
-    assert response.headers["x-content-type-options"] == "nosniff"
-    assert "default-src 'none'" in response.headers["content-security-policy"]
-    assert "no-cache" in response.headers["cache-control"]
-    assert response.headers["expires"] == "0"
+    for endpoint in ("/badge/testuser", "/badge/testuser/unique", "/badge/testuser/both"):
+        response = client.get(endpoint, headers={"User-Agent": "github-camo (abc)"})
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/svg+xml"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert "default-src 'none'" in response.headers["content-security-policy"]
+        assert "no-cache" in response.headers["cache-control"]
+        assert response.headers["expires"] == "0"
 
 
 def test_camo_vs_direct_counting(client):
@@ -161,7 +162,7 @@ def test_atomic_unique_deduplication(client, monkeypatch):
     # Two camo requests from the same viewer IP count once
     camo_headers = {"User-Agent": "github-camo (123)", "X-Forwarded-For": "198.51.100.10"}
     client.get("/badge/uniquetest", headers=camo_headers)
-    resp = client.get("/badge/uniquetest", headers=camo_headers)
+    resp = client.get("/badge/uniquetest/unique", headers=camo_headers)
 
     assert resp.status_code == 200
     assert ">1<" in resp.text
@@ -169,7 +170,7 @@ def test_atomic_unique_deduplication(client, monkeypatch):
     # A different viewer IP is a second unique visitor
     other_headers = {"User-Agent": "github-camo (456)", "X-Forwarded-For": "198.51.100.11"}
     client.get("/badge/uniquetest", headers=other_headers)
-    resp3 = client.get("/badge/uniquetest", headers=other_headers)
+    resp3 = client.get("/badge/uniquetest/unique", headers=other_headers)
     assert ">2<" in resp3.text
 
 
@@ -343,7 +344,15 @@ def test_repeat_visitor_counted_once_per_dedupe_period(client, monkeypatch):
 def test_badge_views_split_and_today(client):
     require_test_db()
     camo_headers = {"User-Agent": "github-camo (abc)"}
-    client.get("/badge/splituser", headers=camo_headers)
+    default_resp = client.get("/badge/splituser", headers=camo_headers)
+    assert default_resp.status_code == 200
+    assert "unique view" in default_resp.text
+    assert "total visit" in default_resp.text
+
+    # Dedicated /unique endpoint
+    unique_resp = client.get("/badge/splituser/unique", headers=camo_headers)
+    assert unique_resp.status_code == 200
+    assert "Unique Visitors (est.)" in unique_resp.text
 
     # Split view (today · total)
     split_resp = client.get("/badge/splituser?view=split", headers=camo_headers)

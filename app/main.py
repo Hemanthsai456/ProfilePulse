@@ -560,6 +560,8 @@ def rate_limited(client_id: str, limit: int = RATE_LIMIT_PER_MIN) -> bool:
 def normalize_metric(metric: str) -> str:
     """Normalize metric aliases to standard keys."""
     m = metric.strip().lower()
+    if m in ("both", "combined", "views_visits", "default"):
+        return "both"
     if m in ("unique", "uniques", "total", "total_unique"):
         return "unique"
     if m in ("today", "daily", "today_unique"):
@@ -570,7 +572,7 @@ def normalize_metric(metric: str) -> str:
         return "windows"
     raise HTTPException(
         status_code=400,
-        detail="Metric must be one of: 'unique' (Total Uniques), 'today' (Today's Uniques), 'loads' (Badge Loads), or 'windows' (Active Windows).",
+        detail="Metric must be one of: 'both' (default: unique views & total visits), 'unique' (Total Uniques), 'today' (Today's Uniques), 'loads' (Badge Loads), or 'windows' (Active Windows).",
     )
 
 
@@ -614,7 +616,7 @@ app = FastAPI(
 async def badge(
     username: str,
     request: Request,
-    metric: str = Query("unique", description="Metric: 'unique' (all-time), 'today', 'loads', or 'windows'"),
+    metric: str = Query("both", description="Metric: 'both' (unique views & total visits, default), 'unique' (all-time), 'today', 'loads', or 'windows'"),
     view: str = Query("", description="Badge style view: 'split' (shows today · total) or standard"),
     label: str = Query("", description="Custom label for the badge"),
     color: str = Query("", description="Custom badge color (hex code or name)"),
@@ -817,9 +819,14 @@ async def badge(
     elif metric_type == "loads":
         display_label = label[:32] if label else "Badge Loads"
         display_value = format_number(total_loads)
-    else:  # 'unique' (default)
+    elif metric_type == "unique":
         display_label = label[:32] if label else "Unique Visitors (est.)"
         display_value = format_number(total_unique)
+    else:  # 'both' (default)
+        u_suffix = "view" if total_unique == 1 else "views"
+        t_suffix = "visit" if total_loads == 1 else "visits"
+        display_label = label[:32] if label else f"{format_number(total_unique)} unique {u_suffix}"
+        display_value = f"{format_number(total_loads)} total {t_suffix}"
 
     svg_content = render_svg(display_label, display_value, color)
 
@@ -835,6 +842,68 @@ async def badge(
         headers["X-RateLimit-Exceeded"] = "true"
 
     return Response(content=svg_content, media_type="image/svg+xml", headers=headers)
+
+
+@app.get("/badge/{username}/unique")
+@app.get("/badge/{username}/unique.svg")
+async def badge_unique(
+    username: str,
+    request: Request,
+    label: str = Query("", description="Custom label for the badge"),
+    color: str = Query("", description="Custom badge color (hex code or name)"),
+    source: str = Query(
+        "camo",
+        description="Traffic source to count: 'camo' (GitHub proxy views only), 'all', or 'direct'",
+    ),
+    preview: bool = Query(
+        False,
+        description="If true, do not increment or record hit (useful for previewing without counting)",
+    ),
+    ignore_owner: bool | None = Query(None, description="Deprecated alias for preview"),
+):
+    """Serve the standalone unique visitors badge for a GitHub username."""
+    return await badge(
+        username=username,
+        request=request,
+        metric="unique",
+        view="",
+        label=label,
+        color=color,
+        source=source,
+        preview=preview,
+        ignore_owner=ignore_owner,
+    )
+
+
+@app.get("/badge/{username}/both")
+@app.get("/badge/{username}/both.svg")
+async def badge_both(
+    username: str,
+    request: Request,
+    label: str = Query("", description="Custom label for the badge"),
+    color: str = Query("", description="Custom badge color (hex code or name)"),
+    source: str = Query(
+        "camo",
+        description="Traffic source to count: 'camo' (GitHub proxy views only), 'all', or 'direct'",
+    ),
+    preview: bool = Query(
+        False,
+        description="If true, do not increment or record hit (useful for previewing without counting)",
+    ),
+    ignore_owner: bool | None = Query(None, description="Deprecated alias for preview"),
+):
+    """Serve the dual unique views and total visits badge for a GitHub username."""
+    return await badge(
+        username=username,
+        request=request,
+        metric="both",
+        view="",
+        label=label,
+        color=color,
+        source=source,
+        preview=preview,
+        ignore_owner=ignore_owner,
+    )
 
 
 @app.get("/report/{username}")
