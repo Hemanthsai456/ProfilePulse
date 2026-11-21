@@ -400,9 +400,11 @@ def test_rate_limiting_graceful_degradation(client, monkeypatch):
 
 
 def test_svg_sanitization():
-    rendered = render_svg("<script>alert(1)</script>", "10", color="blue")
+    rendered = render_svg("<script>alert(1)</script>", "10", color="blue", label_color="green")
     assert "<script>" not in rendered
     assert "&lt;script&gt;" in rendered
+    assert "#2ea043" in rendered  # label_color="green"
+    assert "#0969da" in rendered  # color="blue"
 
 
 # -------------------------------------------------------------------------

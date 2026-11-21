@@ -445,10 +445,10 @@ def categorize_ua(ua: str) -> str:
     return "other"
 
 
-def sanitize_color(color_input: str | None) -> str:
+def sanitize_color(color_input: str | None, default: str = "#2ea043") -> str:
     """Validate and sanitize the badge color to prevent SVG markup injection."""
     if not color_input:
-        return "#2ea043"
+        return default
 
     color_lower = color_input.strip().lower()
     if color_lower in SAFE_COLORS:
@@ -458,7 +458,7 @@ def sanitize_color(color_input: str | None) -> str:
     if match:
         return f"#{match.group(1)}"
 
-    return "#2ea043"
+    return default
 
 
 def escape_xml(s: str) -> str:
@@ -481,7 +481,7 @@ def format_number(n: int) -> str:
     return f"{n:,}"
 
 
-def render_svg(label: str, value: str, color: str = "#2ea043") -> str:
+def render_svg(label: str, value: str, color: str = "#2ea043", label_color: str = "#555") -> str:
     """Generate an accessible, Shields-style SVG badge."""
     label_esc = escape_xml(label)
     value_esc = escape_xml(value)
@@ -492,7 +492,8 @@ def render_svg(label: str, value: str, color: str = "#2ea043") -> str:
 
     lx = lw / 2.0
     vx = lw + (vw / 2.0)
-    safe_color = sanitize_color(color)
+    safe_color = sanitize_color(color, default="#2ea043")
+    safe_label_color = sanitize_color(label_color, default="#555")
 
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="20" '
@@ -506,7 +507,7 @@ def render_svg(label: str, value: str, color: str = "#2ea043") -> str:
         f'<rect width="{total_w}" height="20" rx="3" fill="#fff"/>'
         f'</clipPath>'
         f'<g clip-path="url(#r)">'
-        f'<rect width="{lw}" height="20" fill="#555"/>'
+        f'<rect width="{lw}" height="20" fill="{safe_label_color}"/>'
         f'<rect x="{lw}" width="{vw}" height="20" fill="{safe_color}"/>'
         f'<rect width="{total_w}" height="20" fill="url(#s)"/>'
         f'</g>'
@@ -619,7 +620,9 @@ async def badge(
     metric: str = Query("both", description="Metric: 'both' (unique views & total visits, default), 'unique' (all-time), 'today', 'loads', or 'windows'"),
     view: str = Query("", description="Badge style view: 'split' (shows today · total) or standard"),
     label: str = Query("", description="Custom label for the badge"),
-    color: str = Query("", description="Custom badge color (hex code or name)"),
+    color: str = Query("", description="Custom badge color for right side (hex code or name)"),
+    label_color: str = Query("", description="Custom badge color for left side (hex code or name)"),
+    labelColor: str | None = Query(None, description="CamelCase alias for label_color"),
     source: str = Query(
         "camo",
         description="Traffic source to count: 'camo' (GitHub proxy views only), 'all', or 'direct'",
@@ -828,7 +831,8 @@ async def badge(
         display_label = label[:32] if label else f"{format_number(total_unique)} unique {u_suffix}"
         display_value = f"{format_number(total_loads)} total {t_suffix}"
 
-    svg_content = render_svg(display_label, display_value, color)
+    effective_label_color = labelColor if labelColor is not None else label_color
+    svg_content = render_svg(display_label, display_value, color=color, label_color=effective_label_color)
 
     headers = {
         "Content-Type": "image/svg+xml",
@@ -851,6 +855,8 @@ async def badge_unique(
     request: Request,
     label: str = Query("", description="Custom label for the badge"),
     color: str = Query("", description="Custom badge color (hex code or name)"),
+    label_color: str = Query("", description="Custom badge color for left side (hex code or name)"),
+    labelColor: str | None = Query(None, description="CamelCase alias for label_color"),
     source: str = Query(
         "camo",
         description="Traffic source to count: 'camo' (GitHub proxy views only), 'all', or 'direct'",
@@ -869,6 +875,8 @@ async def badge_unique(
         view="",
         label=label,
         color=color,
+        label_color=label_color,
+        labelColor=labelColor,
         source=source,
         preview=preview,
         ignore_owner=ignore_owner,
@@ -882,6 +890,8 @@ async def badge_both(
     request: Request,
     label: str = Query("", description="Custom label for the badge"),
     color: str = Query("", description="Custom badge color (hex code or name)"),
+    label_color: str = Query("", description="Custom badge color for left side (hex code or name)"),
+    labelColor: str | None = Query(None, description="CamelCase alias for label_color"),
     source: str = Query(
         "camo",
         description="Traffic source to count: 'camo' (GitHub proxy views only), 'all', or 'direct'",
@@ -900,6 +910,8 @@ async def badge_both(
         view="",
         label=label,
         color=color,
+        label_color=label_color,
+        labelColor=labelColor,
         source=source,
         preview=preview,
         ignore_owner=ignore_owner,

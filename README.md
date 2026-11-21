@@ -44,7 +44,8 @@ Embed the badge in your GitHub README using your deployed host:
 | `metric` | `both` (default), `unique`, `today`, `loads`, `windows` | Metric to display: both (unique views on left & total visits on right), unique (all-time), today, badge loads, or active windows. |
 | `view` | `split`, standard (default) | `split` displays both today and total counts (`X today · Y total`). |
 | `label` | String (e.g. `Views`) | Custom label on the left side of the badge. |
-| `color` | Hex (`4c1`, `#0969da`) or name (`blue`, `green`, `orange`) | Custom color for the right side of the badge. |
+| `color` | Hex (`4c1`, `#0969da`) or name (`blue`, `green`, `orange`) | Custom color for the right side of the badge (default: green `#2ea043`). |
+| `label_color` | Hex (`2ea043`, `#555`) or name (`green`, `blue`) | Custom color for the left side of the badge (default: grey `#555555`, alias: `labelColor`). |
 | `source` | `camo` (default), `all`, `direct` | Traffic source filter. In production, default `camo` counts only GitHub proxy hits. |
 | `preview` | `true`, `false` (default) | Renders the badge without incrementing or recording hits (alias: `ignore_owner`). |
 
