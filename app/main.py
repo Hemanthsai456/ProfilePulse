@@ -193,6 +193,10 @@ def mask_db_url(url: str) -> str:
         return "postgresql://***:***@masked/db"
 
 
+# Every table the app owns. Each gets Row Level Security at startup.
+APP_TABLES = ("user_totals", "daily_stats", "daily_uniques", "active_windows", "hits", "visitor_seen")
+
+
 def init_db(conn: psycopg.Connection) -> None:
     """Initialize PostgreSQL database schema with all required tables and indexes."""
     with conn.cursor() as cur:
@@ -298,6 +302,13 @@ def init_db(conn: psycopg.Connection) -> None:
             cur.execute(
                 f"UPDATE {table} SET {column} = {ist_expr.format(col=src)} WHERE {column} IS NULL"
             )
+
+        # 8. Row Level Security on every app table. Supabase's Data API exposes the public
+        #    schema, so without RLS anyone with the project URL and anon key could read hits and
+        #    visitor hashes. With RLS enabled and no policies, anon/authenticated access is denied.
+        #    The table owner and the postgres role bypass RLS, so the app's own connection is unaffected.
+        for table in APP_TABLES:
+            cur.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
     conn.commit()
 
 

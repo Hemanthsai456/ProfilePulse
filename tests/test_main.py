@@ -246,6 +246,21 @@ def test_malformed_forwarded_address_is_ignored():
     assert ip == "203.0.113.9"
 
 
+def test_row_level_security_enabled_on_all_app_tables():
+    require_test_db()
+    conn = app_module.get_db()
+    app_module.init_db(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT relname, relrowsecurity FROM pg_class WHERE relname = ANY(%s)",
+            (list(app_module.APP_TABLES),),
+        )
+        rows = cur.fetchall()
+    conn.close()
+    assert len(rows) == len(app_module.APP_TABLES)
+    assert all(row["relrowsecurity"] for row in rows)
+
+
 def test_report_states_viewer_identity_and_trust(client, monkeypatch):
     require_test_db()
     monkeypatch.setattr(app_module, "TRUST_PROXY", False)
