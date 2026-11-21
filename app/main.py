@@ -522,6 +522,47 @@ def render_svg(label: str, value: str, color: str = "#2ea043", label_color: str 
     )
 
 
+def render_svg_parts(parts: list[tuple[str, str]]) -> str:
+    """Render a badge from segments, each with its own text and background color.
+
+    Used by the dual and split badges, where each side has a label and a counter.
+    """
+    widths = [max(30, int(7.2 * len(text) + 16)) for text, _ in parts]
+    total_w = sum(widths)
+    rects: list[str] = []
+    texts: list[str] = []
+    x = 0
+    for (text, color), width in zip(parts, widths):
+        text_esc = escape_xml(text)
+        safe = sanitize_color(color, default="#555")
+        cx = x + width / 2.0
+        rects.append(f'<rect x="{x}" width="{width}" height="20" fill="{safe}"/>')
+        texts.append(f'<text aria-hidden="true" x="{cx}" y="15" fill="#010101" fill-opacity=".3">{text_esc}</text>')
+        texts.append(f'<text x="{cx}" y="14">{text_esc}</text>')
+        x += width
+    aria = escape_xml(" ".join(text for text, _ in parts))
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="20" role="img" aria-label="{aria}">'
+        f'<title>{aria}</title>'
+        '<linearGradient id="s" x2="0" y2="100%">'
+        '<stop offset="0" stop-color="#bbb" stop-opacity=".1"/>'
+        '<stop offset="100%" stop-opacity=".1"/>'
+        '</linearGradient>'
+        '<clipPath id="r">'
+        f'<rect width="{total_w}" height="20" rx="3" fill="#fff"/>'
+        '</clipPath>'
+        '<g clip-path="url(#r)">'
+        + "".join(rects)
+        + f'<rect width="{total_w}" height="20" fill="url(#s)"/>'
+        '</g>'
+        '<g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" '
+        'text-rendering="geometricPrecision" font-size="11">'
+        + "".join(texts)
+        + '</g>'
+        '</svg>'
+    )
+
+
 def valid_user(username: str) -> str:
     """Validate GitHub username according to GitHub naming rules."""
     if (
@@ -617,6 +658,8 @@ app = FastAPI(
 async def badge(
     username: str,
     request: Request,
+    label2_color: str = Query("", description="Custom badge color for the right label (hex code or name). Dual and split badges only."),
+    color2: str = Query("", description="Custom badge color for the right counter (hex code or name). Dual and split badges only."),
     metric: str = Query("both", description="Metric: 'both' (unique views & total visits, default), 'unique' (all-time), 'today', 'loads', or 'windows'"),
     view: str = Query("", description="Badge style view: 'split' (shows today · total) or standard"),
     label: str = Query("", description="Custom label for the badge"),
@@ -832,7 +875,22 @@ async def badge(
         display_value = f"{format_number(total_loads)} total {t_suffix}"
 
     effective_label_color = labelColor if labelColor is not None else label_color
-    svg_content = render_svg(display_label, display_value, color=color, label_color=effective_label_color)
+    # Dual and split badges have two sides, each with a label and a counter, so each part gets its own color.
+    # A custom label keeps the single-text layout.
+    four_part = (not label) and (view == "split" or metric_type == "both")
+    if four_part:
+        if view == "split":
+            texts = ("Today", format_number(today_unique), "Total", format_number(total_unique))
+        else:
+            texts = ("Unique views", format_number(total_unique), "Total visits", format_number(total_loads))
+        svg_content = render_svg_parts([
+            (texts[0], effective_label_color),
+            (texts[1], color),
+            (texts[2], label2_color or effective_label_color),
+            (texts[3], color2 or color),
+        ])
+    else:
+        svg_content = render_svg(display_label, display_value, color=color, label_color=effective_label_color)
 
     headers = {
         "Content-Type": "image/svg+xml",
@@ -888,6 +946,8 @@ async def badge_unique(
 async def badge_both(
     username: str,
     request: Request,
+    label2_color: str = Query("", description="Custom badge color for the right label (hex code or name)"),
+    color2: str = Query("", description="Custom badge color for the right counter (hex code or name)"),
     label: str = Query("", description="Custom label for the badge"),
     color: str = Query("", description="Custom badge color (hex code or name)"),
     label_color: str = Query("", description="Custom badge color for left side (hex code or name)"),
@@ -912,6 +972,8 @@ async def badge_both(
         color=color,
         label_color=label_color,
         labelColor=labelColor,
+        label2_color=label2_color,
+        color2=color2,
         source=source,
         preview=preview,
         ignore_owner=ignore_owner,

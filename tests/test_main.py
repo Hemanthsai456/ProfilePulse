@@ -346,8 +346,8 @@ def test_badge_views_split_and_today(client):
     camo_headers = {"User-Agent": "github-camo (abc)"}
     default_resp = client.get("/badge/splituser", headers=camo_headers)
     assert default_resp.status_code == 200
-    assert "unique view" in default_resp.text
-    assert "total visit" in default_resp.text
+    assert "Unique views" in default_resp.text
+    assert "Total visits" in default_resp.text
 
     # Dedicated /unique endpoint
     unique_resp = client.get("/badge/splituser/unique", headers=camo_headers)
@@ -357,13 +357,31 @@ def test_badge_views_split_and_today(client):
     # Split view (today · total)
     split_resp = client.get("/badge/splituser?view=split", headers=camo_headers)
     assert split_resp.status_code == 200
-    assert "today" in split_resp.text
-    assert "total" in split_resp.text
+    assert "Today" in split_resp.text
+    assert "Total" in split_resp.text
 
     # Today metric
     today_resp = client.get("/badge/splituser?metric=today", headers=camo_headers)
     assert today_resp.status_code == 200
     assert "Visitors Today (est.)" in today_resp.text
+
+
+def test_dual_badge_colors_each_part_separately(client):
+    require_test_db()
+    camo_headers = {"User-Agent": "github-camo (four)"}
+    params = {
+        "label_color": "#2ea043",  # left label
+        "color": "#2c81f5",  # left counter
+        "label2_color": "#ff0000",  # right label
+        "color2": "#000000",  # right counter
+    }
+    resp = client.get("/badge/fourpart", headers=camo_headers, params=params)
+    assert resp.status_code == 200
+    svg = resp.text
+    # Each of the four parts is painted with its own color, in order
+    order = [svg.index(f'fill="{c}"') for c in ("#2ea043", "#2c81f5", "#ff0000", "#000000")]
+    assert order == sorted(order)
+    assert svg.count("<rect x=") == 4
 
 
 def test_preview_mode(client):
